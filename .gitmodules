@@ -1,0 +1,10 @@
+[submodule "include/icldata_analyses"]
+	path = include/icldata_analyses
+	url = git@gitlab.com:lab2050544/projects/ultrasound/ultrasound_iot/watchus/algorithm/icldata_analyses.git
+[submodule "include/dasIT"]
+	path = include/dasIT
+	url = git@github.com:luuleitner/dasIT.git
+	branch = usdatarecycler
+[submodule "include/emg"]
+	path = include/emg
+	url = git@github.com:luuleitner/EMG_tutorial.git

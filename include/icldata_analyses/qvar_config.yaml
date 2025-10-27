@@ -1,0 +1,48 @@
+# Experiment
+experiment:
+  basepath: "C:/Users/chule/code/dev/projects/ultrasound/modulUS/watchUS/algorithm/icldata_analyses/data_processing/20250304_ICLtuesday"
+  exp_nbr: 4
+  US_channel_positions: [ 'top central','bottom radial','bottom ulna']
+
+# Data Loading
+data:
+
+qvar_channels: [3,5]
+
+####### Data Processing
+# Ultrasound
+ultrasound:
+  US_channel: 1
+  use_USfilter: true
+  use_USenvelope: true
+  use_USlogcompression: true
+  clipUSat: 800  # Number of samples to clip
+  dbrange_compression: 60
+  US_filter:
+    fcutoff_band: [5000000, 15000000]  # Frequency cutoff for filtering
+    fsampling: 50000000
+    type: "gaussian"
+    order: 10
+
+# Qvar
+qvar:
+  Qvar_channel: 4
+  f_sampling: 240
+  use_QVnotchFilter: true
+  use_QVbpFilter: true
+  use_SmoothSavGol: true
+  notch_filter:
+    w0: 50
+    Q: 30
+  bandpass_filter:
+    low: 1
+    high: 110
+    order: 4
+  savgol_filter:
+    window: 50
+    order: 2
+
+
+# Plotting Parameters
+plotting:
+  use_plotly: true  # If true, use Plotly. Otherwise, use Matplotlib.

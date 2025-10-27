@@ -1,0 +1,6 @@
+[submodule "include/dasIT"]
+	path = include/dasIT
+	url = https://github.com/luuleitner/dasIT
+[submodule "include/emg"]
+	path = include/emg
+	url = https://github.com/luuleitner/EMG_tutorial
