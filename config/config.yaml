@@ -1,0 +1,228 @@
+# ========================================
+# COMPREHENSIVE TRAINING CONFIGURATION
+# ========================================
+
+# Global Settings
+global_setting:
+  run:
+    type: embedding                    # embedding, classifier
+    mode: run                         # debug, run, overfit
+    behaviour: deterministic          # deterministic, probabilistic
+    device: cuda                      # cpu, cuda
+
+    config:
+      debug:
+        level: 2                      # 1, 2, 3
+      deterministic:
+        seed: &global_seed 353
+
+  paths:
+    base_data_path: &base_data_path "/vol/data/2025_wristus_wiicontroller_leitner"
+    process_base_data_path: &process_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed"
+    train_base_data_path: &train_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_Sequences/TokenWin05_TokenStr02_SeqWin10/run_20251022_232420"
+
+# ========================================
+# ML PIPELINE CONFIGURATION
+# ========================================
+ml:
+  # Data Loading
+  loading:
+    load_data_pickle: True
+
+  # Dataset Configuration
+  dataset:
+    data_root: *train_base_data_path
+    target_batch_size: &target_batch_size 50
+    dataset_key: 'token'
+
+    # Test/Validation Filters
+    test_val_participant_filter: null
+    test_val_session_filter: [14]
+    test_val_experiment_filter: null
+    test_val_label_filter: null
+
+    # Split Configuration
+    test_val_split_ratio: 0.5
+    split_level: "sequence"
+    random_seed: *global_seed
+
+    # Global Filters
+    global_participant_filter: null
+    global_session_filter: null
+    global_experiment_filter: null
+    global_label_filter: null
+
+    # Data Shuffling
+    shuffle_experiments: true
+    shuffle_sequences: true
+
+  # Model Architecture
+  model:
+    type: "TransformerAutoencoder"            # "CNNAutoencoder", "TransformerAutoencoder", "HybridTransformerAutoencoder"
+    channels_per_layer: [16, 32, 64]
+    embedding_dim: 256                # Single value or list for progressive dims
+    num_heads: 8                   # For transformer models
+    num_layers: 4                  # For transformer models
+
+  # Training Configuration
+  training:
+    # Basic Training Parameters
+    epochs: 500
+    lr: 0.0003
+    weight_decay: 1e-4
+
+    # Optimizer Configuration
+    optimizer:
+      type: "adamw"                   # adamw, adam, sgd
+      betas: [0.9, 0.999]            # For Adam/AdamW
+      eps: 1e-8                      # For Adam/AdamW
+      momentum: 0.9                  # For SGD
+
+    # Learning Rate Scheduler
+    lr_scheduler:
+      type: "plateau"                 # plateau, onecycle, cosine, step, none
+      factor: 0.5                    # ReduceLROnPlateau factor
+      patience: 10                   # ReduceLROnPlateau patience
+      threshold: 1e-4                # ReduceLROnPlateau threshold
+      min_lr: 1e-6                   # Minimum learning rate
+
+    # Loss Configuration
+    loss_weights:
+      mse_weight: 0.8
+      l1_weight: 0.2
+      embedding_reg: 0.001
+
+    # Training Regularization
+    regularization:
+      grad_clip_norm: 1.0            # Gradient clipping norm
+      dropout_rate: 0.0              # Dropout rate (if applicable)
+      batch_norm: true               # Use batch normalization
+
+    # Checkpointing
+    checkpointing:
+      save_best: true
+      save_every_n_epochs: 10        # Save regular checkpoint every N epochs
+      checkpoint_path: *train_base_data_path
+
+    # Restart Configuration
+    restart:
+      enable: True
+      auto_find_checkpoint: False
+      checkpoint_path: null          # Specific checkpoint path or null for auto-detection
+      save_restart_every: 10         # Save restart checkpoint every N epochs
+
+    # Validation and Evaluation
+    validation:
+      plot_every_n_epochs: 1        # Generate plots every N epochs
+      evaluate_on_test: true         # Evaluate on test set during training
+      early_stopping:
+        enable: false                # Enable early stopping
+        patience: 20                 # Early stopping patience
+        min_delta: 1e-6             # Minimum improvement threshold
+
+# ========================================
+# PREPROCESSING CONFIGURATION
+# ========================================
+preprocess:
+  data:
+    basepath: *base_data_path
+    id: "Dataset_Envelope_Sequences"
+    strategy: "all"                   # all, specific
+    save_ftype: "h5"                  # h5, zarr
+
+  signal:
+    clip:
+      apply: true
+      samples2keep: 1300              # ~20mm depth at 50MSPS
+    envelope:
+      apply: true
+    logcompression:
+      apply: false
+      db: 65
+    normalization:
+      apply: true
+      method: "peakZ"
+      minmax_path: "/home/cleitner/code/lab/projects/ML/m-mode_nn/config/minmax_Envdata.csv"
+    decimation:
+      apply: true
+      factor: 10                      # 50MSPS -> 5MSPS
+
+  tokenization:
+    tokens2file: true
+    startendID: false
+    window: 5
+    stride: 2
+    description: "Specifies the tokenization process."
+
+  sequencing:
+    window: 10
+
+  configs:
+    all:
+      description: "Process all experiments and sessions"
+    specific:
+      selection:
+        session: [17]
+        experiment: [0, 1]
+      description: "Process specific sessions and experiments"
+
+# ========================================
+# LOGGING CONFIGURATION
+# ========================================
+wandb:
+  use_wandb: true
+  project: "m-mode_nn_embedding"
+  api_key: "c1842818a3c8db66c3f75d77b4640749e64cdc0d"
+  name: "embedding_autoencoder"
+  notes: "1DCNN for dimensionality reduction with comprehensive restart support"
+  tags:
+    - "embedding"
+    - "autoencoder"
+    - "ultrasound"
+    - "restart_enabled"
+
+  # Advanced WandB settings
+  settings:
+    save_code: true
+    log_gradients: false             # Log gradient histograms
+    log_parameters: false            # Log parameter histograms
+    watch_model: true                # Watch model with wandb.watch()
+
+# ========================================
+# EXPERIMENTAL CONFIGURATION
+# ========================================
+experiment:
+  name: "ultrasound_embedding_v1"
+  description: "1DCNN autoencoder for ultrasound M-mode dimensionality reduction"
+  version: "1.0.0"
+
+  # Reproducibility
+  reproducibility:
+    deterministic_algorithms: true    # Use deterministic algorithms when possible
+    benchmark_mode: false            # CUDNN benchmark mode
+
+  # Resource Management
+  resources:
+    num_workers: 2                   # DataLoader workers
+    pin_memory: true                 # Pin memory for faster GPU transfer
+    prefetch_factor: 2               # DataLoader prefetch factor
+
+# ========================================
+# ADVANCED TRAINING OPTIONS
+# ========================================
+advanced:
+  # Mixed Precision Training
+  mixed_precision:
+    enable: false                    # Enable AMP (Automatic Mixed Precision)
+    loss_scale: "dynamic"            # dynamic or float value
+
+  # Distributed Training
+  distributed:
+    enable: false                    # Enable distributed training
+    backend: "nccl"                  # nccl, gloo
+    world_size: 1                    # Number of processes
+
+  # Profiling
+  profiling:
+    enable: false                    # Enable PyTorch profiler
+    trace_file: "trace.json"         # Profiler output file

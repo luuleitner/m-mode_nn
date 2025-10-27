@@ -1,0 +1,38 @@
+# Core ML/Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Scientific Computing
+numpy>=1.23.0
+scipy>=1.10.0
+pandas>=2.0.0
+scikit-learn>=1.2.0
+scikit-image>=0.20.0
+
+# Data Storage
+h5py>=3.8.0
+zarr>=2.14.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.14.0
+
+# Configuration Management
+omegaconf>=2.3.0
+PyYAML>=6.0
+
+# Experiment Tracking
+wandb>=0.15.0
+
+# Development Tools
+tqdm>=4.65.0
+colorlog>=6.7.0
+GitPython>=3.1.30
+
+# Optional: Game development for interactive tools
+pygame>=2.3.0
+
+# Build Tools
+setuptools>=67.0.0
