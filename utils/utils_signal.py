@@ -1,7 +1,7 @@
 import h5py
 import numpy as np
 from omegaconf import OmegaConf
-from scipy.signal import butter, sosfiltfilt
+from scipy.signal import butter, sosfiltfilt, hilbert, resample
 from numpy.lib.stride_tricks import sliding_window_view
 
 
@@ -15,6 +15,24 @@ def Time_Gain_Compensation(US, freq, coef_att): # TODO: this could be speed up b
     attenuation = np.exp(coef_att * (freq/10e6) * Sequence_depth)
      
     return US * attenuation[np.newaxis, :, np.newaxis]
+
+def analytic_signal(signal, ax, interp=False, padding=False, padding_mode = None, pad_amount= 0, *kwargs):
+    if padding: # Pad signal to reduce edge effects if requested
+        padding_list = [(0,0) for x in range(len(signal.shape))]
+        padding_list[ax] = (pad_amount, pad_amount)
+        signal = np.pad(signal, padding_list, mode= padding_mode, *kwargs)
+        
+    hilbert_transformed_signal = hilbert(signal, axis=ax)
+    
+    if padding: # Remove padding after Hilbert transform if padding was applied
+        hilbert_transformed_signal = hilbert_transformed_signal.take(indices=range(pad_amount, hilbert_transformed_signal.shape[ax] - pad_amount), axis=ax)
+        
+    if interp: # Interpolate signal if requested
+        hilbert_transformed_signal_interp = resample(hilbert_transformed_signal, hilbert_transformed_signal.shape[0] * 3, axis=-1)
+        return hilbert_transformed_signal_interp
+    else:
+        return hilbert_transformed_signal
+
 
 def peak_normalization(data, maximum=None, static=False):
     data = data.astype(float)

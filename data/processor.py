@@ -10,13 +10,13 @@ import yaml
 from tqdm import tqdm
 
 
-from include.dasIT.dasIT.features.signal import analytic_signal, envelope, logcompression
+from include.dasIT.dasIT.features.signal import envelope, logcompression
 
 from data.dimension_checker import DimensionChecker
 from config.configurator import load_config, setup_environment
 from visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
-from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation
+from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, analytic_signal
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("MAIN")
@@ -60,6 +60,10 @@ class DataProcessor():
 
         #---Envelope
         self._envelope_flag = self._config.preprocess.signal.envelope.apply
+        self._envelope_interp = self._config.preprocess.signal.envelope.interp
+        self._envelope_padding_flag = self._config.preprocess.signal.envelope.padding.apply
+        self._envelope_padding_mode = self._config.preprocess.signal.envelope.padding.mode
+        self._envelope_padding_amount = self._config.preprocess.signal.envelope.padding.amount
 
         #---Log Compression
         self._logcompression_flag = self._config.preprocess.signal.logcompression.apply
@@ -245,6 +249,10 @@ class DataProcessor():
                 'decimation_flag': self._decimation_flag,
                 'decimation_factor': self._decimation_factor,
                 'envelope_flag': self._envelope_flag,
+                'envelope_padding_flag': self._envelope_padding_flag,
+                'envelope_interp': self._envelope_interp,
+                'envelope_padding_mode': self._envelope_padding_mode,
+                'envelope_padding_amount': self._envelope_padding_amount,
                 'logcompression_flag': self._logcompression_flag,
                 'logcompression_dbrange': self._logcompression_dbrange,
                 'normalization_flag': self._normalization_flag,
@@ -448,7 +456,8 @@ class DataProcessor():
 
         #---Envelope
         if self._envelope_flag:
-            data = envelope(analytic_signal(data, ax=1))
+            data = envelope(analytic_signal(data, ax=1, interp=self._envelope_interp, padding=self._envelope_padding_flag,
+                                            pad_mode=self._envelope_padding_mode, pad_amount=self._envelope_padding_amount), ax=1)
 
         #---Logcompression
         if self._logcompression_flag:

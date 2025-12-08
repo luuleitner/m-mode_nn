@@ -148,6 +148,11 @@ preprocess:
       samples2remove_end: 589             
     envelope:
       apply: true
+      interp: false
+      padding:
+        apply: true
+        mode: "constant"
+        amount: 30
     logcompression:
       apply: false
       db: 65
