@@ -16,7 +16,7 @@ from data.dimension_checker import DimensionChecker
 from config.configurator import load_config, setup_environment
 from visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
-from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, analytic_signal
+from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, analytic_signal, extract_sliding_windows
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("MAIN")
@@ -481,13 +481,15 @@ class DataProcessor():
         last_axis_len = data.shape[-1]
         num_windows = (last_axis_len - self._token_window) //  self._token_stride + 1
 
-        # Calculate window start and end indices
+        # Calculate window start and end indices - for metadata usage only
         starts = [i * self._token_stride for i in range(num_windows)]
         ends = [start + self._token_window for start in starts]
 
-        # Extract data processing slices (tokens)
-        token = np.stack([data[..., start:end] for start, end in zip(starts, ends)], axis=0)
-        token_label = np.stack([label[..., start:end] for start, end in zip(starts, ends)], axis=0)
+        #Extracts sliding windows (tokens)
+        token = extract_sliding_windows(data, ax=2, window_size=self._token_window, stride=self._token_stride) # (chs, samples, num_windows, window_size)
+        token = token.swapaxes(0,2).swapaxes(1,2)  # (num_windows, chs, samples, window_size)
+        token_label = extract_sliding_windows(label, ax=1, window_size=self._token_window, stride=self._token_stride) # (labels, num_windows, window_size)
+        token_label = token_label.swapaxes(0,1)  # (num_windows, labels, window_size)
 
         token_label_mean = np.mean(token_label, axis=-1)
         x_label =  np.squeeze(token_label_mean[:, :, 2])

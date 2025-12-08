@@ -5,7 +5,6 @@ from scipy.signal import butter, sosfiltfilt, hilbert, resample
 from numpy.lib.stride_tricks import sliding_window_view
 
 
-
 def butter_bandpass_filter(data, ax, lowcut, highcut, fs, order) -> np.ndarray:
     sos = butter(order, [lowcut,highcut], fs=fs, btype='bandpass', output="sos")
     return sosfiltfilt(sos, data, axis=ax)
@@ -76,6 +75,16 @@ def smart_round(x):
     # Filter
     y[closer_to_zero] = 0
     return y
+
+def extract_sliding_windows(data, ax, window_size, stride):
+    data = sliding_window_view(data, axis=ax, window_shape=window_size)
+    indexes = []
+    for x in range(len(data.shape)):
+        indexes.append(slice(0, data.shape[x]))
+    indexes[ax] = slice(0, data.shape[ax], stride)
+    data = data[tuple(indexes)]
+    
+    return data
 
 
 def openhd5(path):
