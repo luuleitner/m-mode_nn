@@ -50,7 +50,9 @@ class DataProcessor():
 
         # ---Clipping
         self._clip_flag = self._config.preprocess.signal.clip.apply
-        self._clip_samples2keep = self._config.preprocess.signal.clip.samples2keep
+        self._clip_initial_size = self._config.preprocess.signal.clip.initial_size
+        self._clip_samples2remove_start = self._config.preprocess.signal.clip.samples2remove_start
+        self._clip_samples2remove_end = self._config.preprocess.signal.clip.samples2remove_end
 
         #---Decimation
         self._decimation_flag = self._config.preprocess.signal.decimation.apply
@@ -192,8 +194,8 @@ class DataProcessor():
         import shutil
         
         # Calculate expected dimensions
-        height_after_clip = self._clip_samples2keep if self._clip_flag else 'full'
-        height_after_decimation = self._clip_samples2keep // self._decimation_factor if self._clip_flag and self._decimation_flag else 'varies'
+        height_after_clip = (self._clip_initial_size - self._clip_samples2remove_start - self._clip_samples2remove_end) if self._clip_flag else 'full'
+        height_after_decimation = (self._clip_initial_size - self._clip_samples2remove_start - self._clip_samples2remove_end) // self._decimation_factor if self._clip_flag and self._decimation_flag else 'varies'
         
         replication_info = {
             'run_info': {
@@ -237,7 +239,9 @@ class DataProcessor():
                 'tgc_fs': self._tgc_fs,
                 'tgc_coef_att': self._tgc_coef_att,
                 'clip_flag': self._clip_flag,
-                'clip_samples2keep': self._clip_samples2keep,
+                'clip_initial_size': self._clip_initial_size,
+                'clip_samples2remove_start': self._clip_samples2remove_start,
+                'clip_samples2remove_end': self._clip_samples2remove_end,
                 'decimation_flag': self._decimation_flag,
                 'decimation_factor': self._decimation_factor,
                 'envelope_flag': self._envelope_flag,
@@ -439,7 +443,8 @@ class DataProcessor():
         
         # Clipping
         if self._clip_flag:
-            data = data[:, :self._clip_samples2keep, :]
+            end_clip = data.shape[1] - self._clip_samples2remove_end
+            data = data[:, self._clip_samples2remove_start:end_clip, :]
 
         #---Envelope
         if self._envelope_flag:

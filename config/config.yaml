@@ -143,7 +143,9 @@ preprocess:
       coef_att: 0.3                   # Attenuation coefficient in dB/(MHz·cm) - 0.5 is the standard for soft tissue, adjust as needed
     clip:
       apply: true
-      samples2keep: 1300              # ~20mm depth at 50MSPS
+      initial_size: 1996
+      samples2remove_start: 107
+      samples2remove_end: 589             
     envelope:
       apply: true
     logcompression:
