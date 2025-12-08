@@ -16,7 +16,7 @@ from data.dimension_checker import DimensionChecker
 from config.configurator import load_config, setup_environment
 from visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
-from utils.utils_signal import peak_normalization, Z_normalization
+from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("MAIN")
@@ -35,6 +35,13 @@ class DataProcessor():
 
         # Set Processing Parameters
         # Signal Processing and Flags
+        
+        #---Bandpass Filtering
+        self._bandpass_flag = self._config.preprocess.signal.bandpass.apply
+        self._bandpass_lowcut = self._config.preprocess.signal.bandpass.lowcut
+        self._bandpass_highcut = self._config.preprocess.signal.bandpass.highcut
+        self._bandpass_fs = self._config.preprocess.signal.bandpass.fs
+        self._bandpass_order = self._config.preprocess.signal.bandpass.order
 
         # ---Clipping
         self._clip_flag = self._config.preprocess.signal.clip.apply
@@ -216,6 +223,11 @@ class DataProcessor():
                 }
             },
             'processing_parameters': {
+                'bandpass_flag': self._bandpass_flag,
+                'bandpass_lowcut': self._bandpass_lowcut,
+                'bandpass_highcut': self._bandpass_highcut,
+                'bandpass_fs': self._bandpass_fs,
+                'bandpass_order': self._bandpass_order,
                 'clip_flag': self._clip_flag,
                 'clip_samples2keep': self._clip_samples2keep,
                 'decimation_flag': self._decimation_flag,
@@ -408,6 +420,11 @@ class DataProcessor():
 
 
     def _signal_processing(self, data):
+        
+        # Bandpass Filtering
+        if self._bandpass_flag:
+            data = butter_bandpass_filter(data, 1, lowcut=self._bandpass_lowcut, highcut=self._bandpass_highcut, fs=self._bandpass_fs, order=self._bandpass_order)
+        
         # Clipping
         if self._clip_flag:
             data = data[:, :self._clip_samples2keep, :]

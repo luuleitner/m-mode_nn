@@ -131,6 +131,12 @@ preprocess:
     save_ftype: "h5"                  # h5, zarr
 
   signal:
+    bandpass:
+      apply: true
+      lowcut: 8e6                     # 8 MHz
+      highcut: 12e6                   # 12 MHz
+      fs: 50e6                        # 50 MSPS
+      order: 5
     clip:
       apply: true
       samples2keep: 1300              # ~20mm depth at 50MSPS
