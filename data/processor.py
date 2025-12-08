@@ -16,7 +16,7 @@ from data.dimension_checker import DimensionChecker
 from config.configurator import load_config, setup_environment
 from visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
-from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter
+from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("MAIN")
@@ -42,6 +42,11 @@ class DataProcessor():
         self._bandpass_highcut = self._config.preprocess.signal.bandpass.highcut
         self._bandpass_fs = self._config.preprocess.signal.bandpass.fs
         self._bandpass_order = self._config.preprocess.signal.bandpass.order
+        
+        #---Time Gain Compensation (TGC)
+        self._tgc_flag = self._config.preprocess.signal.tgc.apply
+        self._tgc_fs = self._config.preprocess.signal.tgc.freq
+        self._tgc_coef_att = self._config.preprocess.signal.tgc.coef_att
 
         # ---Clipping
         self._clip_flag = self._config.preprocess.signal.clip.apply
@@ -228,6 +233,9 @@ class DataProcessor():
                 'bandpass_highcut': self._bandpass_highcut,
                 'bandpass_fs': self._bandpass_fs,
                 'bandpass_order': self._bandpass_order,
+                'tgc_flag': self._tgc_flag,
+                'tgc_fs': self._tgc_fs,
+                'tgc_coef_att': self._tgc_coef_att,
                 'clip_flag': self._clip_flag,
                 'clip_samples2keep': self._clip_samples2keep,
                 'decimation_flag': self._decimation_flag,
@@ -424,6 +432,10 @@ class DataProcessor():
         # Bandpass Filtering
         if self._bandpass_flag:
             data = butter_bandpass_filter(data, 1, lowcut=self._bandpass_lowcut, highcut=self._bandpass_highcut, fs=self._bandpass_fs, order=self._bandpass_order)
+        
+        # Time Gain Compensation (TGC)
+        if self._tgc_flag:
+            data = Time_Gain_Compensation(data, freq=self._tgc_fs, coef_att=self._tgc_coef_att)
         
         # Clipping
         if self._clip_flag:
