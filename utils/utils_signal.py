@@ -1,8 +1,14 @@
 import h5py
 import numpy as np
 from omegaconf import OmegaConf
+from scipy.signal import butter, sosfiltfilt
 from numpy.lib.stride_tricks import sliding_window_view
 
+
+
+def butter_bandpass_filter(data, ax, lowcut, highcut, fs, order) -> np.ndarray:
+    sos = butter(order, [lowcut,highcut], fs=fs, btype='bandpass', output="sos")
+    return sosfiltfilt(sos, data, axis=ax)
 
 def peak_normalization(data, maximum=None, static=False):
     data = data.astype(float)
