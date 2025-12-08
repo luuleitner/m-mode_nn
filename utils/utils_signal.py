@@ -1,21 +1,21 @@
 import h5py
 import numpy as np
 from omegaconf import OmegaConf
-
-
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 def peak_normalization(data, maximum=None, static=False):
     data = data.astype(float)
     if maximum is None:
-        maximum = np.array([np.abs(channel).max() for channel in data])
-    maximum = np.repeat(np.expand_dims(maximum, 1), data.shape[1], axis=-1)
-    maximum = np.repeat(np.expand_dims(maximum, 2), data.shape[2], axis=-1)
-    data /= maximum
+        maximum = np.amax(data, axis=(1,2)) # (frames, channels)
+        minimum = np.amin(data, axis=(1,2)) # (frames, channels)
+
+    data -= minimum[:, np.newaxis, np.newaxis]  # Broadcasting over samples (frames, sampels, channels)
+    data /= (maximum[:, np.newaxis, np.newaxis] - minimum[:, np.newaxis, np.newaxis])  # Broadcasting over samples (frames, sampels, channels)
 
     #NOTE: use to precompute the min/max values of the complete dataset
-    if static:
-        minmax = np.array([np.min(data), np.max(data)])
+    if static: #TODO: Currently this does not perform the same normalization approach as the dynamic . It only saves one 
+        minmax = np.array([minimum, maximum])
         minmax = smart_round(minmax)
         return data, minmax
     else:
@@ -24,16 +24,17 @@ def peak_normalization(data, maximum=None, static=False):
 def Z_normalization(data, sigma=None, static=False):
     data = data.astype(float)
     if sigma is None:
-        sigma = np.array([np.std(data) for channel in data])
-    sigma = np.repeat(np.expand_dims(sigma, 1), data.shape[1], axis=-1)
-    sigma = np.repeat(np.expand_dims(sigma, 2), data.shape[2], axis=-1)
-    data /= sigma
+        sigma = np.std(data, axis=(1,2))  # (frames, channels)
+        mean = np.mean(data, axis=(1,2))  # (frames, channels)
+        
+    data -= mean[:, np.newaxis, np.newaxis]  # Broadcasting over samples (frames, sampels, channels)
+    data /= sigma[:, np.newaxis, np.newaxis]  # Broadcasting over samples (frames, sampels, channels)
 
-    #NOTE: use to precompute the min/max values of the complete dataset
+    #NOTE: use to precompute the mean/sigma values of the complete dataset
     if static:
-        minmax = np.array([np.min(data), np.max(data)])
-        minmax = smart_round(minmax)
-        return data, minmax
+        meansigma = np.array([mean, sigma])
+        meansigma = smart_round(meansigma)
+        return data, meansigma
     else:
         return data
 
