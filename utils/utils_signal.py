@@ -10,6 +10,12 @@ def butter_bandpass_filter(data, ax, lowcut, highcut, fs, order) -> np.ndarray:
     sos = butter(order, [lowcut,highcut], fs=fs, btype='bandpass', output="sos")
     return sosfiltfilt(sos, data, axis=ax)
 
+def Time_Gain_Compensation(US, freq, coef_att): # TODO: this could be speed up by making the multiplication inplace, but care needs to be taken on the dtype of the input array
+    Sequence_depth = np.arange(0, US.shape[1], 1) * (1/freq) * (1e2 * 1540 / 2)
+    attenuation = np.exp(coef_att * (freq/10e6) * Sequence_depth)
+     
+    return US * attenuation[np.newaxis, :, np.newaxis]
+
 def peak_normalization(data, maximum=None, static=False):
     data = data.astype(float)
     if maximum is None:

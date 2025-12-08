@@ -137,6 +137,10 @@ preprocess:
       highcut: 12e6                   # 12 MHz
       fs: 50e6                        # 50 MSPS
       order: 5
+    tgc:
+      apply: true
+      freq: 50e6                      # 50 MSPS
+      coef_att: 0.3                   # Attenuation coefficient in dB/(MHz·cm) - 0.5 is the standard for soft tissue, adjust as needed
     clip:
       apply: true
       samples2keep: 1300              # ~20mm depth at 50MSPS
