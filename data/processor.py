@@ -72,9 +72,10 @@ class DataProcessor():
         #---Normalization
         # In the standard mode the normalization is done channel wise for each exerpiment
         # One option that is not fully implemented is the possibility to normalize with precomputed values.
+        # NOTE (20251228): The normalization using dataset wide precomputed values is not yet implemented.
+        #  Currently norm is calculated channel-wise for each experiment even thought the infrastructure is already in place
         self._normalization_flag = self._config.preprocess.signal.normalization.apply
         self._normalization_technique = self._config.preprocess.signal.normalization.method
-        # NOTE: The normalization using precomputed values is not yet implemented. Currently norm is calculated channel-wise for each experiment
         self._normalization_minmax_path = self._config.preprocess.signal.normalization.minmax_path
         if self._normalization_minmax_path:
             self._minmax_normalization_values = np.loadtxt(self._normalization_minmax_path, delimiter=',')
