@@ -10,13 +10,14 @@ import yaml
 from tqdm import tqdm
 
 
-from include.dasIT.dasIT.features.signal import envelope, logcompression
+from include.dasIT.dasIT.features.signal import envelope, logcompression, analytic_signal
 
 from data.dimension_checker import DimensionChecker
 from config.configurator import load_config, setup_environment
 from visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
-from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, analytic_signal, extract_sliding_windows
+from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, extract_sliding_windows
+# from utils.utils_signal import analytic_signal
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("MAIN")
@@ -444,7 +445,12 @@ class DataProcessor():
         
         # Bandpass Filtering
         if self._bandpass_flag:
-            data = butter_bandpass_filter(data, 1, lowcut=self._bandpass_lowcut, highcut=self._bandpass_highcut, fs=self._bandpass_fs, order=self._bandpass_order)
+            data = butter_bandpass_filter(data,
+                                          ax=1,
+                                          lowcut=self._bandpass_lowcut,
+                                          highcut=self._bandpass_highcut,
+                                          fs=self._bandpass_fs,
+                                          order=self._bandpass_order)
         
         # Time Gain Compensation (TGC)
         if self._tgc_flag:
@@ -452,17 +458,24 @@ class DataProcessor():
         
         # Clipping
         if self._clip_flag:
-            end_clip = data.shape[1] - self._clip_samples2remove_end
-            data = data[:, self._clip_samples2remove_start:end_clip, :]
+            clip_end = data.shape[1] - self._clip_samples2remove_end
+            data = data[:, self._clip_samples2remove_start:clip_end, :]
 
         #---Envelope
         if self._envelope_flag:
-            data = envelope(analytic_signal(data, ax=1, interp=self._envelope_interp, padding=self._envelope_padding_flag,
-                                            pad_mode=self._envelope_padding_mode, pad_amount=self._envelope_padding_amount), ax=1)
+            # NOTE: @Bruno this introduces quite a significant signal lag i therefore converged back to the original implementation
+            # data = envelope(analytic_signal(data, ax=1,
+            #                                 interp=self._envelope_interp,
+            #                                 padding=self._envelope_padding_flag,
+            #                                 pad_mode=self._envelope_padding_mode,
+            #                                 pad_amount=self._envelope_padding_amount))
+            data = envelope(analytic_signal(data))
 
         #---Logcompression
         if self._logcompression_flag:
             data = logcompression(data, self._logcompression_dbrange)
+
+
 
         #---Normalization
         if self._normalization_flag:
@@ -489,12 +502,12 @@ class DataProcessor():
         #Extracts sliding windows (tokens)
         token = extract_sliding_windows(data, ax=2, window_size=self._token_window, stride=self._token_stride) # (chs, samples, num_windows, window_size)
         token = token.swapaxes(0,2).swapaxes(1,2)  # (num_windows, chs, samples, window_size)
-        token_label = extract_sliding_windows(label, ax=1, window_size=self._token_window, stride=self._token_stride) # (labels, num_windows, window_size)
+        token_label = np.squeeze(extract_sliding_windows(label, ax=2, window_size=self._token_window, stride=self._token_stride)) # (labels, num_windows, window_size)
         token_label = token_label.swapaxes(0,1)  # (num_windows, labels, window_size)
 
         token_label_mean = np.mean(token_label, axis=-1)
-        x_label =  np.squeeze(token_label_mean[:, :, 2])
-        y_label =  np.squeeze(token_label_mean[:, :, 3])
+        x_label =  np.squeeze(token_label_mean[:, 2])
+        y_label =  np.squeeze(token_label_mean[:, 3])
 
         token_label = (
                 (x_label < 0).astype(int) * 2 +
