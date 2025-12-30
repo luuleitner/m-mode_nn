@@ -126,7 +126,7 @@ ml:
 preprocess:
   data:
     basepath: *base_data_path
-    id: "Dataset_Envelope_Sequences"
+    id: "Dataset_Envelope_Sequences_newpreproc"
     strategy: "all"                   # all, specific
     save_ftype: "h5"                  # h5, zarr
 
@@ -155,7 +155,7 @@ preprocess:
         amount: 30
     logcompression:
       apply: false
-      db: 65
+      db: 20
     normalization:
       apply: true
       method: "peakZ"
