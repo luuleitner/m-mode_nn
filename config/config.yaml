@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2025_wristus_wiicontroller_leitner"
     process_base_data_path: &process_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_Sequences/TokenWin05_TokenStr02_SeqWin10/run_20251022_232420"
+    train_base_data_path: &train_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_Sequences_newpreproc/TokenWin05_TokenStr02_SeqWin10/run_20251231_000136"
 
 # ========================================
 # ML PIPELINE CONFIGURATION

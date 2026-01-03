@@ -506,8 +506,8 @@ class DataProcessor():
         token_label = token_label.swapaxes(0,1)  # (num_windows, labels, window_size)
 
         token_label_mean = np.mean(token_label, axis=-1)
-        x_label =  np.squeeze(token_label_mean[:, 2])
-        y_label =  np.squeeze(token_label_mean[:, 3])
+        x_label =  np.squeeze(token_label_mean[:, 1])
+        y_label =  np.squeeze(token_label_mean[:, 2])
 
         token_label = (
                 (x_label < 0).astype(int) * 2 +
