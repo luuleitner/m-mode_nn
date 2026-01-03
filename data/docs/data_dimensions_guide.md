@@ -53,72 +53,127 @@ startend_markers: False
 
 ---
 
+## Dimension Terminology
+
+| Term | Physical Meaning                 | Sampling | Axis in Code |
+|------|----------------------------------|----------|--------------|
+| **A-mode samples** | Fast-time (depth/axial)         | 50 MHz | axis 1 after stack |
+| **Pulses** | Slow-time (M-mode temporal axis) | ~50 Hz PRF | axis 2 after stack |
+| **Channels** | US transducer channels           | - | axis 0 after stack |
+
+---
+
+## Raw Data Format
+
+### Ultrasound Files (`_US_ch{1,2,3}.npy`)
+- **On-disk shape**: `[pulses, A-mode_samples]` → `[~10000, 1996]`
+- **Axis 0**: Pulse repetitions (~10,000-11,500 per experiment, ~50 Hz PRF)
+- **Axis 1**: A-mode samples per pulse (1996 samples @ 50 MHz)
+- **dtype**: int16
+
+### Joystick File (`_joystick.npy`)
+- **On-disk shape**: `[samples, channels]` → `[~10000, 4]`
+- **Axis 0**: Time samples (synchronized with US pulse count)
+- **Axis 1**: Channels
+  - `[:,0]` = unused
+  - `[:,1]` = **X position**
+  - `[:,2]` = **Y position**
+  - `[:,3]` = **Trigger**
+- **dtype**: int16 or float64
+
+---
+
 ## Signal Processing Pipeline Order
 
 The processing is applied in the following sequence in `_signal_processing()`:
 
-1. **Bandpass Filtering** - Butterworth filter (8-12 MHz)
-2. **Time Gain Compensation (TGC)** - Depth-dependent gain
-3. **Clipping** - Remove start/end samples
+1. **Bandpass Filtering** - Butterworth filter (8-12 MHz) on A-mode axis
+2. **Time Gain Compensation (TGC)** - Depth-dependent gain on A-mode axis
+3. **Clipping** - Remove start/end A-mode samples
 4. **Envelope Detection** - Analytic signal → envelope
 5. **Log Compression** - Dynamic range compression (optional)
 6. **Normalization** - peakZ: peak_normalization() → Z_normalization()
-7. **Decimation** - Downsample by factor
+7. **Decimation** - Downsample A-mode axis by factor
 
 ---
 
 ## Data Flow & Dimension Transformations
 
-### Processing Pipeline Dimensions
+### Loading & Stacking (processor.py lines 397-407)
 
-### 1. Raw Input
-- **Shape**: `[channels, time_samples, a_mode_lines]` → `[3, ~65000, ~5000]`
-- **Description**: Raw ultrasound data (3 channels)
+```
+Raw File (per channel):    [pulses, A-mode] = [~10000, 1996]
+                                    ↓ Transpose (d.T)
+After Transpose:           [A-mode, pulses] = [1996, ~10000]
+                                    ↓ np.stack(..., axis=0)
+After Stack (3 channels):  [ch, A-mode, pulses] = [3, 1996, ~10000]
+```
+
+### Signal Processing Pipeline
+
+### 1. Raw Input (after load & stack)
+- **Shape**: `[channels, A-mode_samples, pulses]` → `[3, 1996, ~10000]`
+- **Description**: 3 US channels, 1996 depth samples, ~10000 temporal pulses
 
 ### 2. After Bandpass + TGC
-- **Shape**: `[3, ~65000, ~5000]` (unchanged)
+- **Shape**: `[3, 1996, ~10000]` (unchanged)
 - **Description**: Filtered and gain-compensated signal
 
 ### 3. After Clipping
-- **Shape**: `[3, 1300, ~5000]`
-- **Description**: Clipped: start=107, end=589 removed from initial_size=1996
-- **Formula**: `height = initial_size - samples2remove_start - samples2remove_end`
+- **Shape**: `[3, 1300, ~10000]`
+- **Description**: A-mode axis clipped: start=107, end=589 removed from 1996 samples
+- **Formula**: `A-mode_clipped = initial_size - samples2remove_start - samples2remove_end`
+- **Example**: `1996 - 107 - 589 = 1300`
 
 ### 4. After Envelope + Normalization
-- **Shape**: `[3, 1300, ~5000]` (unchanged)
+- **Shape**: `[3, 1300, ~10000]` (unchanged)
 - **Description**: Envelope detected, peak & Z normalized
 
 ### 5. After Decimation
-- **Shape**: `[3, 130, ~5000]`
-- **Description**: Decimated by factor 10
-- **Formula**: `height_decimated = height_clipped // decimation_factor`
+- **Shape**: `[3, 130, ~10000]`
+- **Description**: A-mode axis decimated by factor 10
+- **Formula**: `A-mode_decimated = A-mode_clipped // decimation_factor`
+- **Example**: `1300 // 10 = 130`
 
-### 6. After Tokenization
-- **Shape**: `[num_tokens, 3, 130, 5]`
-- **Description**: Sliding windows with window=5, stride=2
-- **Formula**: `num_tokens = (a_mode_lines - token_window) // token_stride + 1`
-- **Example**: For 5000 a_mode_lines: `(5000-5)//2 + 1 = 2498 tokens`
-- **Token overlap**: `token_window - token_stride = 3 samples`
+### 6. After Tokenization (lines 493-506)
+- **Input**: `[3, 130, ~10000]`
+- **Operation**: Sliding windows along **pulse axis** (axis 2)
+- **Output Shape**: `[num_tokens, 3, 130, 5]`
+- **Formula**: `num_tokens = (pulses - token_window) // token_stride + 1`
+- **Example**: For 10000 pulses: `(10000-5)//2 + 1 = 4998 tokens`
+- **Token overlap**: `token_window - token_stride = 3 pulses`
 
-### 7. After Sequencing
+### 7. After Sequencing (lines 538-541)
 - **Shape**: `[num_sequences, 10, 3, 130, 5]`
-- **Description**: Grouped into sequences of 10 tokens
+- **Description**: Tokens grouped into sequences of 10
 - **Formula**: `num_sequences = num_tokens // sequence_window`
-- **Example**: `2498 // 10 = 249 sequences` (8 tokens clipped)
+- **Example**: `4998 // 10 = 499 sequences` (8 tokens clipped)
 - **Tokens clipped**: `num_tokens % sequence_window`
 
+### Dimension Summary Table
+
+| Stage | Shape | Description |
+|-------|-------|-------------|
+| Raw file (per ch) | `[~10000, 1996]` | On-disk: [pulses, A-mode] |
+| After transpose | `[1996, ~10000]` | [A-mode, pulses] |
+| After stack | `[3, 1996, ~10000]` | [ch, A-mode, pulses] |
+| After clip | `[3, 1300, ~10000]` | A-mode trimmed |
+| After decimate | `[3, 130, ~10000]` | A-mode downsampled |
+| After tokenize | `[~4998, 3, 130, 5]` | [tokens, ch, A-mode, token_win] |
+| After sequence | `[~499, 10, 3, 130, 5]` | [seq, seq_win, ch, A-mode, token_win] |
+
 ### Optional: Start/End Markers
-- If `startend_markers: True`: height dimension becomes `130 + 2 = 132`
+- If `startend_markers: True`: A-mode dimension becomes `130 + 2 = 132`
 - Adds fixed value markers at start/end of each A-mode line
 
 ---
 
 ## Memory Usage
 
-- **Total elements per experiment**: `num_sequences × 10 × 3 × 130 × 5`
-- **Example**: 249 × 10 × 3 × 130 × 5 = 4,855,500 elements
-- **Memory per experiment**: ~18.5 MB (float32)
-- **Memory formula**: `num_sequences × sequence_window × channels × height × token_window × 4 bytes`
+- **Total elements per experiment**: `num_sequences × seq_window × channels × A-mode × token_window`
+- **Example**: 499 × 10 × 3 × 130 × 5 = 9,730,500 elements
+- **Memory per experiment**: ~37 MB (float32)
+- **Memory formula**: `num_sequences × 10 × 3 × 130 × 5 × 4 bytes`
 
 ---
 
@@ -139,49 +194,60 @@ output_folder/
 ```
 
 ### HDF5 Keys
-- `X`: Sequence data - Shape: `[num_sequences, 10, 3, 130, 5]`
-- `y`: Labels - Shape: `[num_sequences, 10, 1]`
+- `token`: Sequence data - Shape: `[num_sequences, 10, 3, 130, 5]`
+- `label`: Labels - Shape: `[num_sequences, 10, 1]`
 
 ---
 
 ## Dimension Calculation Formulas
 
 ```python
-# Height after clipping
-height_clipped = initial_size - samples2remove_start - samples2remove_end
+# A-mode samples after clipping
+A_mode_clipped = initial_size - samples2remove_start - samples2remove_end
 # Example: 1996 - 107 - 589 = 1300
 
-# Height after decimation
-height_decimated = height_clipped // decimation_factor
+# A-mode samples after decimation
+A_mode_decimated = A_mode_clipped // decimation_factor
 # Example: 1300 // 10 = 130
 
-# Height with start/end markers (optional)
-height_with_markers = height_decimated + 2 if startend_markers else height_decimated
+# A-mode with start/end markers (optional)
+A_mode_with_markers = A_mode_decimated + 2 if startend_markers else A_mode_decimated
 
-# Number of tokens per experiment
-num_tokens = (a_mode_lines - token_window) // token_stride + 1
+# Number of tokens per experiment (sliding windows along PULSE axis)
+num_tokens = (num_pulses - token_window) // token_stride + 1
+# Example: (10000 - 5) // 2 + 1 = 4998
 
 # Number of sequences per experiment
 num_sequences = num_tokens // sequence_window
+# Example: 4998 // 10 = 499
 
 # Tokens clipped (don't fit into sequences)
 tokens_clipped = num_tokens % sequence_window
+# Example: 4998 % 10 = 8
 
 # Final output shape
-output_shape = [num_sequences, sequence_window, channels, height_final, token_window]
-# Example: [249, 10, 3, 130, 5]
+output_shape = [num_sequences, sequence_window, channels, A_mode_decimated, token_window]
+# Example: [499, 10, 3, 130, 5]
 ```
 
 ---
 
 ## Label Encoding
 
-Labels are derived from joystick data (x, y positions):
+Labels are derived from joystick data (x, y positions from channels 1 and 2):
 
 ```python
+# Joystick channels: [:,1] = X, [:,2] = Y, [:,3] = trigger
+x_label = token_label_mean[:, 1]  # X position
+y_label = token_label_mean[:, 2]  # Y position
+
 # Label encoding scheme (4 quadrants)
 label = (x_label < 0).astype(int) * 2 + (y_label < 0).astype(int)
 # Results in labels: 0, 1, 2, 3 (representing quadrants)
+#   0 = x >= 0, y >= 0 (top-right)
+#   1 = x >= 0, y < 0  (bottom-right)
+#   2 = x < 0,  y >= 0 (top-left)
+#   3 = x < 0,  y < 0  (bottom-left)
 ```
 
 ---
@@ -195,8 +261,8 @@ import numpy as np
 
 # Load single experiment
 with h5py.File('S0001_P0001_E0001_Xy.h5', 'r') as f:
-    data = f['X'][:]    # Shape: [num_sequences, 10, 3, 130, 5]
-    labels = f['y'][:]  # Shape: [num_sequences, 10, 1]
+    data = f['token'][:]   # Shape: [num_sequences, 10, 3, 130, 5]
+    labels = f['label'][:] # Shape: [num_sequences, 10, 1]
 
 # For PyTorch
 import torch
@@ -205,11 +271,11 @@ label_tensor = torch.from_numpy(labels).long()
 ```
 
 ### Expected Shapes
-| Stage | Shape | Description |
-|-------|-------|-------------|
-| Single file load | `[num_seq, 10, 3, 130, 5]` | One experiment |
+| Stage | Shape | Dimensions |
+|-------|-------|------------|
+| Single file load | `[~499, 10, 3, 130, 5]` | [seq, seq_win, ch, A-mode, token_win] |
 | Batched | `[batch, 10, 3, 130, 5]` | Model input |
-| Token level | `[batch, 3, 130, 5]` | Single token |
+| Token level | `[batch, 3, 130, 5]` | Single token: [ch, A-mode, pulses] |
 
 ---
 
@@ -217,7 +283,7 @@ label_tensor = torch.from_numpy(labels).long()
 
 The `metadata.csv` contains:
 - `token_id local`: Token ID within experiment
-- `start`, `end`: Sample indices in original signal
+- `start`, `end`: Pulse indices in original signal (along slow-time axis)
 - `participant`: Participant ID
 - `session`: Session ID
 - `experiment`: Experiment ID
@@ -229,10 +295,10 @@ The `metadata.csv` contains:
 
 ## Validation Checklist
 
-- [ ] Config `token_window` matches data width dimension (5)
-- [ ] Config `sequence_window` matches second dimension (10)
-- [ ] Height = `(initial_size - start - end) // decimation_factor`
-- [ ] Height includes +2 if start/end markers enabled
+- [ ] Config `token_window` matches last dimension (5 pulses per token)
+- [ ] Config `sequence_window` matches second dimension (10 tokens per sequence)
+- [ ] A-mode = `(initial_size - start - end) // decimation_factor` = 130
+- [ ] A-mode includes +2 if start/end markers enabled
 - [ ] Number of sequences × sequence_window ≤ total tokens
 - [ ] Metadata CSV row count matches expected tokens
 
