@@ -174,7 +174,7 @@ def log_training_metrics_classifier(avg_loss, avg_acc, avg_val_loss, avg_val_acc
         )
     })
 
-    # Heatmap of label/prediction pairs (acts like a scatter but with density)
+    # Heatmap of label_logic/prediction pairs (acts like a scatter but with density)
     joint_df = pd.DataFrame({
         "True Label": labels,
         "Predicted Label": preds

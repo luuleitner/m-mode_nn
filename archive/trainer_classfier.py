@@ -12,7 +12,7 @@ from utils import wandb_utils
 class ClassifierTrainer():
     def __init__(self, model=None, Xy_train=None, Xy_val=None, config=None):
 
-        self._labeltype = config.model.label    # defines the label to prediction behaviour
+        self._labeltype = config.model.label    # defines the label_logic to prediction behaviour
 
         # Push Model to Device (GPU)
         self._model = model.to(config.training.device)
@@ -41,12 +41,12 @@ class ClassifierTrainer():
             #   Batch Training
             for batch_idx, (X, y) in enumerate(tqdm(Xy_train, desc=f"Epoch {epoch + 1}/{config.training.epochs} - Training", leave=False)):
 
-                if self._labeltype == 'sequence label':
+                if self._labeltype == 'sequence label_logic':
                     # If Prediction is on sequence labels then the majority vote over all timesteps in the sequence needs to be computed
                     y = y.squeeze(-1)
                     y = torch.mode(y, dim=1).values.long()  # returns the majority mode (mode) with int64 (long)
                 else:
-                    logger.error('Wrong label type.')
+                    logger.error('Wrong label_logic type.')
                     break
 
                 X, y = X.to(config.training.device), y.to(config.training.device)
@@ -104,7 +104,7 @@ class ClassifierTrainer():
 
         with torch.no_grad():
             for batch_idx, (X, y) in enumerate(tqdm(Xy_val, desc="Validating", leave=False)):
-                if self._labeltype == 'sequence label':
+                if self._labeltype == 'sequence label_logic':
                     y = y.squeeze(-1)
                     y = torch.mode(y, dim=1).values.long()
 

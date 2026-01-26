@@ -58,7 +58,7 @@ ml:
 
   # Model Architecture
   model:
-    type: "TransformerAutoencoder"            # "CNNAutoencoder", "TransformerAutoencoder", "HybridTransformerAutoencoder"
+    type: "CNNAutoencoder"            # "CNNAutoencoder", "TransformerAutoencoder", "HybridTransformerAutoencoder"
     channels_per_layer: [16, 32, 64]
     embedding_dim: 256                # Single value or list for progressive dims
     num_heads: 8                   # For transformer models

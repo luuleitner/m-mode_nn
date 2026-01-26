@@ -101,7 +101,7 @@ class DataProcessor():
         self._h5file = None
 
         # Setup metadata table and token ID tracker
-        self._metastructure = ['token_id local', 'start', 'end', 'participant', 'session', 'experiment', 'token label']
+        self._metastructure = ['token_id local', 'start', 'end', 'participant', 'session', 'experiment', 'token label_logic']
         self._metadata = pd.DataFrame(columns=self._metastructure)
         self._tokenid = np.zeros(1)
 
@@ -232,7 +232,7 @@ class DataProcessor():
                 'output_format': {
                     'data_format': self._save_strategy,
                     'data_key': 'X' if self._save_strategy == 'h5' else 'data',
-                    'label_key': 'y' if self._save_strategy == 'h5' else 'label'
+                    'label_key': 'y' if self._save_strategy == 'h5' else 'label_logic'
                 }
             },
             'processing_parameters': {

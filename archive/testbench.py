@@ -6,7 +6,7 @@ This module provides utilities for testing and visualizing the FilteredSplitH5Da
 - **Visualization**: Grid-based plotting of single-channel and multi-channel M-mode
   ultrasound samples with automatic layout optimization.
 - **Split Testing**: Comprehensive testing of train/test/validation dataset splits
-  with support for session, participant, experiment, and label-based filtering.
+  with support for session, participant, experiment, and label_logic-based filtering.
 - **Data Leakage Validation**: Ensures no overlap between dataset splits at both
   sequence and experiment levels.
 - **Analysis Output**: Saves plots with metadata and detailed statistics to

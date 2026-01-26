@@ -262,7 +262,7 @@ import numpy as np
 # Load single experiment
 with h5py.File('S0001_P0001_E0001_Xy.h5', 'r') as f:
     data = f['token'][:]   # Shape: [num_sequences, 10, 3, 130, 5]
-    labels = f['label'][:] # Shape: [num_sequences, 10, 1]
+    labels = f['label_logic'][:] # Shape: [num_sequences, 10, 1]
 
 # For PyTorch
 import torch
