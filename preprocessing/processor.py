@@ -12,12 +12,12 @@ from tqdm import tqdm
 
 from include.dasIT.dasIT.features.signal import envelope, logcompression, analytic_signal
 
-from data.dimension_checker import DimensionChecker
+from preprocessing.dimension_checker import DimensionChecker
 from config.configurator import load_config, setup_environment
 from visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
-from utils.utils_signal import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, extract_sliding_windows
-# from utils.utils_signal import analytic_signal
+from preprocessing.signal_utils import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, extract_sliding_windows
+# from preprocessing.signal_utils import analytic_signal
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("MAIN")

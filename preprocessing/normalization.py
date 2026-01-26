@@ -5,9 +5,7 @@ from tqdm import tqdm
 from omegaconf import OmegaConf
 from include.dasIT.dasIT.features.signal import analytic_signal, envelope, logcompression
 
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.utils_signal import peak_normalization, Z_normalization
+from preprocessing.signal_utils import peak_normalization, Z_normalization
 
 
 def precompute_normalization_values(config_path: str, output_filename: str = 'minmax_Envdata.csv'):

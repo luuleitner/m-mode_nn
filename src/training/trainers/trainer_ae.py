@@ -11,7 +11,7 @@ from tqdm import tqdm
 import wandb
 from typing import Dict, List, Tuple, Optional, Any
 
-from training.trainers.restart_ae import TrainerRestartManager
+from src.training.trainers.restart_ae import TrainerRestartManager
 from include.dasIT.dasIT.features.signal import logcompression
 
 import utils.logging_config as logconf

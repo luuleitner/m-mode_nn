@@ -17,7 +17,7 @@ import pickle
 import os
 
 from utils.utils import load_config
-from data.loader import create_filtered_split_datasets
+from src.data.datasets import create_filtered_split_datasets
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("MAIN")

@@ -8,10 +8,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from config.configurator import load_config, setup_environment
-from models.cnnAE import CNNAutoencoder
-from models.transformerAE import TransformerAutoencoder, CNNTransformerAutoencoder
-from training.trainers.trainer_ae import TrainerAE
-from data.loader import create_filtered_split_datasets
+from src.models.cnn_ae import CNNAutoencoder
+from src.models.transformer_ae import TransformerAutoencoder, CNNTransformerAutoencoder
+from src.training.trainers.trainer_ae import TrainerAE
+from src.data.datasets import create_filtered_split_datasets
 import utils.logging_config as logconf
 logger = logconf.get_logger("MAIN")
 
