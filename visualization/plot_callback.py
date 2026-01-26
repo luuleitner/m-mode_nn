@@ -39,7 +39,7 @@ def MmodeSegments(data=None, segments=None):
         fig.add_trace(trace, row=1, col=1)
     fig.update_yaxes(autorange='reversed', row=1, col=1)
 
-    # Draw rectangles and label (reverse numbering for the top)
+    # Draw rectangles and label_logic (reverse numbering for the top)
     for idx, (start, end) in enumerate(segments):
         window_label = n_segments - idx
         fig.add_shape(

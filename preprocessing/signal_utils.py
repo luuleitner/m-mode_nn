@@ -1,13 +1,84 @@
 import h5py
 import numpy as np
-from omegaconf import OmegaConf
-from scipy.signal import butter, sosfiltfilt, hilbert, resample
+import spm1d
+from scipy.signal import butter, sosfiltfilt, hilbert, resample, medfilt, savgol_filter
 from numpy.lib.stride_tricks import sliding_window_view
 
 
+# ============== Filter Functions ==============
+
 def butter_bandpass_filter(data, ax, lowcut, highcut, fs, order) -> np.ndarray:
+    """Apply butterworth bandpass filter."""
     sos = butter(order, [lowcut,highcut], fs=fs, btype='bandpass', output="sos")
     return sosfiltfilt(sos, data, axis=ax)
+
+def butter_lowpass_filter(data, ax, cutoff, fs, order):
+    """Apply butterworth lowpass filter."""
+    sos = butter(order, cutoff, fs=fs, btype='lowpass', output="sos")
+    return sosfiltfilt(sos, data, axis=ax)
+
+def gaussian_smooth(data, fwhm):
+    """Apply gaussian kernel smoothing using spm1d."""
+    return spm1d.util.smooth(data, fwhm=fwhm)
+
+def moving_average(data, window_size):
+    """Apply moving average filter."""
+    kernel = np.ones(window_size) / window_size
+    return np.convolve(data, kernel, mode='same')
+
+def median_filter(data, kernel_size):
+    """Apply median filter."""
+    return medfilt(data, kernel_size=kernel_size)
+
+def savitzky_golay(data, window_length, polyorder):
+    """Apply Savitzky-Golay filter."""
+    return savgol_filter(data, window_length=window_length, polyorder=polyorder)
+
+def apply_joystick_filters(data, filter_config, signal_type):
+    """
+    Apply all enabled filters for the given signal type (raw or derivative).
+    """
+    signal_config = filter_config.get(signal_type, {})
+
+    # Apply lowpass filter first
+    lowpass_cfg = signal_config.get('lowpass', {})
+    if lowpass_cfg.get('enabled', False):
+        cutoff = lowpass_cfg.get('cutoff', 10)
+        fs = lowpass_cfg.get('fs', 100)
+        order = lowpass_cfg.get('order', 4)
+        ax = lowpass_cfg.get('ax', 0)
+        data = butter_lowpass_filter(data, ax, cutoff, fs, order)
+
+    # Apply gaussian filter second
+    gaussian_cfg = signal_config.get('gaussian', {})
+    if gaussian_cfg.get('enabled', False):
+        fwhm = gaussian_cfg.get('fwhm', 5.0)
+        data = gaussian_smooth(data, fwhm)
+
+    # Apply moving average filter third
+    moving_avg_cfg = signal_config.get('moving_average', {})
+    if moving_avg_cfg.get('enabled', False):
+        window_size = moving_avg_cfg.get('window_size', 5)
+        data = moving_average(data, window_size)
+
+    # Apply median filter fourth
+    median_cfg = signal_config.get('median', {})
+    if median_cfg.get('enabled', False):
+        kernel_size = median_cfg.get('kernel_size', 5)
+        data = median_filter(data, kernel_size)
+
+    # Apply Savitzky-Golay filter fifth
+    savgol_cfg = signal_config.get('savitzky_golay', {})
+    if savgol_cfg.get('enabled', False):
+        window_length = savgol_cfg.get('window_length', 5)
+        polyorder = savgol_cfg.get('polyorder', 2)
+        data = savitzky_golay(data, window_length, polyorder)
+
+    return data
+
+
+# ============== Ultrasound Specific Functions ==============
+
 
 def Time_Gain_Compensation(US, freq, coef_att):
     # TODO: this could be speed up by making the multiplication inplace, but care needs to be taken on the dtype of the input array
@@ -34,6 +105,8 @@ def analytic_signal(signal, ax, interp=False, padding=False, pad_mode = None, pa
     else:
         return hilbert_transformed_signal
 
+
+# ============== Normalization Functions ==============
 
 def peak_normalization(data, minmax=None, precompute=False):
     data = data.astype(float)
@@ -81,6 +154,9 @@ def Z_normalization(data, meansigma=None, precompute=False):
     else:
         return data
 
+
+# ============== Math Functions ==============
+
 def smart_round(x):
     # Create Boolean array with all values closer to 0
     closer_to_zero = np.abs(x) < 0.5
@@ -101,7 +177,11 @@ def extract_sliding_windows(data, ax, window_size, stride):
     return data
 
 
+# ============== Data Functions ==============
+
 def openhd5(path):
     data = h5py.File(path, 'r')
     return data
+
+
 

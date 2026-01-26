@@ -135,9 +135,9 @@ class FilteredSplitH5Dataset(Dataset):
 
         if label_filter is not None:
             self.metadata = self.metadata[
-                self.metadata['label'].isin(label_filter)
+                self.metadata['label_logic'].isin(label_filter)
             ]
-            print(f"Global label filter: -> {len(self.metadata)} sequences")
+            print(f"Global label_logic filter: -> {len(self.metadata)} sequences")
 
     def _create_splits(self, test_val_participant_filter, test_val_session_filter,
                        test_val_experiment_filter, test_val_label_filter,
@@ -172,7 +172,7 @@ class FilteredSplitH5Dataset(Dataset):
 
         if test_val_label_filter is not None:
             test_val_candidates = test_val_candidates[
-                test_val_candidates['label'].isin(test_val_label_filter)
+                test_val_candidates['label_logic'].isin(test_val_label_filter)
             ]
             filter_applied = True
 
@@ -261,7 +261,7 @@ class FilteredSplitH5Dataset(Dataset):
                 test_val_data,
                 test_size=test_ratio,
                 random_state=self.random_seed,
-                stratify=test_val_data['label'] if 'label' in test_val_data.columns else None
+                stratify=test_val_data['label_logic'] if 'label_logic' in test_val_data.columns else None
             )
 
         elif split_level == 'experiment':

@@ -19,7 +19,7 @@ def init_dataset(path, data_size, backend='h5', chunk_size=1024):
         raise ValueError("backend must be 'h5' or 'zarr'")
 
     create('token', (0, *data_size), 'float32', (None, *data_size))
-    create('label', (0, data_size[0], 1), 'int64', (None, data_size[0], 1))
+    create('label_logic', (0, data_size[0], 1), 'int64', (None, data_size[0], 1))
     return f
 
 def append_and_save(path, fileobj, data, label, config=None, backend='h5'):
@@ -30,8 +30,8 @@ def append_and_save(path, fileobj, data, label, config=None, backend='h5'):
     token.resize((new, *token.shape[1:]))
     token[cur:new] = data
 
-    # Append label
-    label_ds = fileobj['label']
+    # Append label_logic
+    label_ds = fileobj['label_logic']
     cur_l = label_ds.shape[0]
     new_l = cur_l + label.shape[0]
     label_ds.resize((new_l, label.shape[1], 1))
