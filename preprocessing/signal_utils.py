@@ -50,7 +50,7 @@ def peak_normalization(data, minmax=None, precompute=False):
     data /= (maximum[:, np.newaxis, np.newaxis] - minimum[:, np.newaxis, np.newaxis])  # Broadcasting over samples (frames, sampels, channels)
 
     #NOTE: precompute command is used to precompute the min/max values of the complete dataset
-    # to precompute use the file in ./data/precompute.py
+    # to precompute use the file in ./data/precompute_normalization_values.py
     if precompute:
         minmax = np.array([minimum, maximum])
         minmax = smart_round(minmax)
@@ -73,7 +73,7 @@ def Z_normalization(data, meansigma=None, precompute=False):
     data /= sigma[:, np.newaxis, np.newaxis]  # Broadcasting over samples (frames, sampels, channels)
 
     #NOTE: precompute command is used to precompute the mean/sigma values of the complete dataset
-    # to precompute use the file in ./data/precompute.py
+    # to precompute use the file in ./data/precompute_normalization_values.py
     if precompute:
         meansigma = np.array([mean, sigma])
         meansigma = smart_round(meansigma)

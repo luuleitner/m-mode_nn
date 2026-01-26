@@ -1,3 +1,31 @@
+"""
+Testbench for M-mode Ultrasound Dataset Visualization and Split Validation.
+
+This module provides utilities for testing and visualizing the FilteredSplitH5Dataset:
+
+- **Visualization**: Grid-based plotting of single-channel and multi-channel M-mode
+  ultrasound samples with automatic layout optimization.
+- **Split Testing**: Comprehensive testing of train/test/validation dataset splits
+  with support for session, participant, experiment, and label-based filtering.
+- **Data Leakage Validation**: Ensures no overlap between dataset splits at both
+  sequence and experiment levels.
+- **Analysis Output**: Saves plots with metadata and detailed statistics to
+  timestamped directories for reproducibility.
+
+Main Functions:
+    test_simple_grid: Visualize single-channel samples in an optimal grid layout.
+    test_multichannel_grid: Visualize multiple channels per sample with configurable
+        arrangements (horizontal, vertical, square).
+    comprehensive_dataset_test: Full dataset testing with filtering, splitting,
+        and visualization.
+    validate_no_data_leakage: Verify train/test/val splits have no overlapping data.
+    quick_split_test: Fast verification of splitting logic without plotting.
+
+Usage:
+    Run as a script to execute the default test scenarios, or import functions
+    for custom testing workflows.
+"""
+
 import torch
 import matplotlib
 import matplotlib.pyplot as plt
@@ -472,7 +500,7 @@ def comprehensive_dataset_test(metadata_file, data_root=None, target_batch_size=
     try:
         # Import from your actual module name - adjust this to match your file
         # Option 1: If you saved the FilteredSplitH5Dataset in a file called 'loader.py'
-        from loader import create_filtered_split_datasets, FilteredSplitH5Dataset
+        from src.data.datasets import create_filtered_split_datasets, FilteredSplitH5Dataset
 
         # Option 2: If you saved it in a different file, update the import accordingly
         # from your_actual_filename import create_filtered_split_datasets
@@ -687,7 +715,7 @@ def quick_split_test(metadata_file, data_root, test_val_session_filter, test_val
 
     try:
         # Import from your actual module name
-        from loader import create_filtered_split_datasets
+        from src.data.datasets import create_filtered_split_datasets
 
         train_ds, test_ds, val_ds = create_filtered_split_datasets(
             metadata_file=metadata_file,
@@ -803,7 +831,7 @@ def test_scenario_participant_split():
     print("SCENARIO: Participant-based splitting")
 
     try:
-        from loader import create_filtered_split_datasets
+        from src.data.datasets import create_filtered_split_datasets
 
         train_ds, test_ds, val_ds = create_filtered_split_datasets(
             metadata_file=metadata_file,
