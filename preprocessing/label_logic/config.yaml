@@ -65,4 +65,4 @@ include:
   session14_W_001:
     exclude:
       pattern: "odd"
-      double_exclude: [1, 6]
+
