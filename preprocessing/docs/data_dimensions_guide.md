@@ -49,6 +49,22 @@ token_window: 5
 token_stride: 2
 sequence_window: 10
 startend_markers: False
+
+# Output Mode (NEW)
+output_mode: "transformer"   # transformer | flat
+# transformer: Sequences for transformer training [num_seq, seq_win, C, H, W]
+# flat: Direct tokens for CNN training [num_tokens, C, H, W]
+
+# Labeling Pipeline (NEW)
+label_method: "derivative"   # derivative | edge_to_peak | edge_to_derivative
+label_threshold_percent: 5.0
+label_axis: "x"              # x | y | combined
+
+# Soft Labels (NEW)
+soft_labels_enabled: false
+soft_labels_num_classes: 3   # 0=noise, 1=up, 2=down
+soft_labels_weighting: "gaussian"  # uniform | gaussian
+soft_labels_gaussian_sigma_ratio: 0.25
 ```
 
 ---
@@ -143,12 +159,22 @@ After Stack (3 channels):  [ch, A-mode, pulses] = [3, 1996, ~10000]
 - **Example**: For 10000 pulses: `(10000-5)//2 + 1 = 4998 tokens`
 - **Token overlap**: `token_window - token_stride = 3 pulses`
 
-### 7. After Sequencing (lines 538-541)
+### 7. After Sequencing/Output (depends on output_mode)
+
+#### Transformer Mode (output_mode: "transformer")
 - **Shape**: `[num_sequences, 10, 3, 130, 5]`
 - **Description**: Tokens grouped into sequences of 10
 - **Formula**: `num_sequences = num_tokens // sequence_window`
 - **Example**: `4998 // 10 = 499 sequences` (8 tokens clipped)
 - **Tokens clipped**: `num_tokens % sequence_window`
+- **Label Shape**: `[num_sequences, 10, 1]` (hard labels)
+
+#### Flat Mode (output_mode: "flat") - NEW for CNN
+- **Shape**: `[num_tokens, 3, 130, 5]`
+- **Description**: Direct token output, no sequencing
+- **Example**: `4998 tokens` (no clipping)
+- **Hard Label Shape**: `[num_tokens, 1]` with integer values (0, 1, 2)
+- **Soft Label Shape**: `[num_tokens, 3]` with float probabilities summing to 1.0
 
 ### Dimension Summary Table
 
@@ -160,7 +186,8 @@ After Stack (3 channels):  [ch, A-mode, pulses] = [3, 1996, ~10000]
 | After clip | `[3, 1300, ~10000]` | A-mode trimmed |
 | After decimate | `[3, 130, ~10000]` | A-mode downsampled |
 | After tokenize | `[~4998, 3, 130, 5]` | [tokens, ch, A-mode, token_win] |
-| After sequence | `[~499, 10, 3, 130, 5]` | [seq, seq_win, ch, A-mode, token_win] |
+| After sequence (transformer) | `[~499, 10, 3, 130, 5]` | [seq, seq_win, ch, A-mode, token_win] |
+| After flat output (CNN) | `[~4998, 3, 130, 5]` | [tokens, ch, A-mode, token_win] |
 
 ### Optional: Start/End Markers
 - If `startend_markers: True`: A-mode dimension becomes `130 + 2 = 132`
@@ -194,8 +221,16 @@ output_folder/
 ```
 
 ### HDF5 Keys
+
+**Transformer Mode:**
 - `token`: Sequence data - Shape: `[num_sequences, 10, 3, 130, 5]`
-- `label`: Labels - Shape: `[num_sequences, 10, 1]`
+- `label`: Labels - Shape: `[num_sequences, 10, 1]` (int64)
+
+**Flat Mode (CNN):**
+- `token`: Token data - Shape: `[num_tokens, 3, 130, 5]`
+- `label`: Labels - Shape varies:
+  - Hard labels: `[num_tokens, 1]` (int64)
+  - Soft labels: `[num_tokens, num_classes]` (float32)
 
 ---
 
@@ -234,48 +269,109 @@ output_shape = [num_sequences, sequence_window, channels, A_mode_decimated, toke
 
 ## Label Encoding
 
-Labels are derived from joystick data (x, y positions from channels 1 and 2):
+### Labeling Pipeline (NEW)
+
+Labels are created using the labeling pipeline from `preprocessing/label_logic/labeling.py`:
+
+**Step 1: Hard Label Creation** (per-sample)
+```python
+# Methods available (configured via preprocess.labels.method):
+# - "derivative": Threshold on derivative signal
+# - "edge_to_peak": Position edge detection + derivative peak finding
+# - "edge_to_derivative": Position edge + derivative threshold crossing
+
+# Label values:
+#   0 = noise (neutral)
+#   1 = upward movement intention
+#   2 = downward movement intention
+```
+
+**Step 2: Token-Level Aggregation**
+```python
+# For hard labels (soft_labels.enabled: false):
+#   - Majority vote within each token window
+#   - Output: [num_tokens, 1] int64
+
+# For soft labels (soft_labels.enabled: true):
+#   - Weighted probability distribution per class
+#   - Weighting: "uniform" or "gaussian" (center-weighted)
+#   - Output: [num_tokens, num_classes] float32, each row sums to 1.0
+```
+
+### Soft Label Example
+```python
+# Token window covers samples with labels: [0, 0, 1, 1, 1]
+# With uniform weighting:
+#   class 0 probability: 2/5 = 0.4
+#   class 1 probability: 3/5 = 0.6
+#   class 2 probability: 0/5 = 0.0
+# Soft label: [0.4, 0.6, 0.0]
+```
+
+### Legacy Label Encoding (for reference)
+
+Previous labeling used quadrant-based encoding:
 
 ```python
 # Joystick channels: [:,1] = X, [:,2] = Y, [:,3] = trigger
-x_label = token_label_mean[:, 1]  # X position
-y_label = token_label_mean[:, 2]  # Y position
-
 # Label encoding scheme (4 quadrants)
 label = (x_label < 0).astype(int) * 2 + (y_label < 0).astype(int)
 # Results in labels: 0, 1, 2, 3 (representing quadrants)
-#   0 = x >= 0, y >= 0 (top-right)
-#   1 = x >= 0, y < 0  (bottom-right)
-#   2 = x < 0,  y >= 0 (top-left)
-#   3 = x < 0,  y < 0  (bottom-left)
 ```
 
 ---
 
 ## Loading Processed Data
 
-### Python Example
+### Python Example - Transformer Mode
 ```python
 import h5py
-import numpy as np
+import torch
 
-# Load single experiment
+# Load single experiment (transformer mode)
 with h5py.File('S0001_P0001_E0001_Xy.h5', 'r') as f:
     data = f['token'][:]   # Shape: [num_sequences, 10, 3, 130, 5]
-    labels = f['label_logic'][:] # Shape: [num_sequences, 10, 1]
+    labels = f['label'][:] # Shape: [num_sequences, 10, 1]
 
 # For PyTorch
-import torch
 data_tensor = torch.from_numpy(data).float()
 label_tensor = torch.from_numpy(labels).long()
 ```
 
+### Python Example - Flat Mode (CNN)
+```python
+import h5py
+import torch
+
+# Load single experiment (flat mode with soft labels)
+with h5py.File('S0001_P0001_E0001_Xy.h5', 'r') as f:
+    data = f['token'][:]   # Shape: [num_tokens, 3, 130, 5]
+    labels = f['label'][:] # Shape: [num_tokens, 3] (soft) or [num_tokens, 1] (hard)
+
+# For PyTorch with soft labels
+data_tensor = torch.from_numpy(data).float()
+label_tensor = torch.from_numpy(labels).float()  # float for soft labels
+
+# Verify soft labels sum to 1
+assert torch.allclose(label_tensor.sum(dim=1), torch.ones(len(label_tensor)))
+```
+
 ### Expected Shapes
+
+**Transformer Mode:**
 | Stage | Shape | Dimensions |
 |-------|-------|------------|
 | Single file load | `[~499, 10, 3, 130, 5]` | [seq, seq_win, ch, A-mode, token_win] |
 | Batched | `[batch, 10, 3, 130, 5]` | Model input |
 | Token level | `[batch, 3, 130, 5]` | Single token: [ch, A-mode, pulses] |
+
+**Flat Mode (CNN):**
+| Stage | Shape | Dimensions |
+|-------|-------|------------|
+| Single file load | `[~4998, 3, 130, 5]` | [tokens, ch, A-mode, token_win] |
+| Batched | `[batch, 3, 130, 5]` | CNN input |
+| Soft labels | `[batch, 3]` | Probability distribution |
+| Hard labels | `[batch, 1]` | Class index |
 
 ---
 

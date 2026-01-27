@@ -85,7 +85,10 @@ class ConfigurationManager:
         return getattr(self.preprocess.data, 'basepath', '')  # Default to empty string if missing
 
     def get_checkpoint_path(self) -> str:
-        return os.path.join(getattr(self.ml.training.checkpointing, 'checkpoint_path', ''),'checkpoints')
+        path = getattr(self.ml.training.checkpointing, 'checkpoint_path', None)
+        if path:
+            return os.path.join(path, 'checkpoints')
+        return None
 
     def is_deterministic(self) -> bool:
         return self.global_setting.run.behaviour == "deterministic"
@@ -304,13 +307,15 @@ class ConfigurationManager:
         """Post-initialization setup"""
         # Set paths if not provided
         if not self.get_train_data_root() and hasattr(self.global_setting.paths, 'train_base_data_path'):
-            self.ml.dataset.train_data_root = self.global_setting.paths.processed_path
+            train_path = self.global_setting.paths.train_base_data_path
+            if train_path:
+                self.ml.dataset.train_data_root = train_path
 
         if not self.get_process_data_root() and hasattr(self.global_setting.paths, 'process_base_data_path'):
-            self.preprocess.data.process_data_root = self.global_setting.paths.processed_path
+            self.preprocess.data.process_data_root = self.global_setting.paths.process_base_data_path
 
         if not self.get_checkpoint_path() and hasattr(self.global_setting.paths, 'process_base_data_path'):
-            self.ml.training.checkpoint_path = self.global_setting.paths.processed_path
+            self.ml.training.checkpoint_path = self.global_setting.paths.process_base_data_path
 
         # Create directories
         if self.get_checkpoint_path():

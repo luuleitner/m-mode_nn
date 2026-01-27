@@ -5,7 +5,7 @@
 # Global Settings
 global_setting:
   run:
-    type: embedding                    # embedding, classifier
+    type: embedding                   # embedding, classifier
     mode: run                         # debug, run, overfit
     behaviour: deterministic          # deterministic, probabilistic
     device: cuda                      # cpu, cuda
@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2025_wristus_wiicontroller_leitner"
     process_base_data_path: &process_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_Sequences_newpreproc/TokenWin05_TokenStr02_SeqWin10/run_20251231_000136"
+    train_base_data_path: &train_base_data_path null  # Set after preprocessing completes
 
 # ========================================
 # ML PIPELINE CONFIGURATION
@@ -126,8 +126,9 @@ ml:
 preprocess:
   data:
     basepath: *base_data_path
-    id: "Dataset_Envelope_Sequences_newpreproc"
-    strategy: "all"                   # all, specific
+    id: "Dataset_Envelope_CNN"
+    strategy: "selection_file"                   # all | selection_file
+    selection_file: "config/preprocessing_selection.csv"   # Used when strategy=selection_file (run utils/generate_selection.py)
     save_ftype: "h5"                  # h5, zarr
 
   signal:
@@ -167,21 +168,26 @@ preprocess:
   tokenization:
     tokens2file: true
     startendID: false
-    window: 5
+    window: 50
     stride: 2
     description: "Specifies the tokenization process."
 
   sequencing:
     window: 10
 
-  configs:
-    all:
-      description: "Process all experiments and sessions"
-    specific:
-      selection:
-        session: [17]
-        experiment: [0, 1]
-      description: "Process specific sessions and experiments"
+  output:
+    mode: "flat"             # transformer | flat (flat for CNN, no sequencing)
+
+  labels:
+    method: "edge_to_derivative"            # derivative | edge_to_peak | edge_to_derivative
+    threshold_percent: 10.0
+    axis: "x"                       # x | y | combined (which joystick axis to use)
+
+    soft_labels:
+      enabled: true
+      num_classes: 3                # 0=noise, 1=up/right, 2=down/left
+      weighting: "gaussian"         # uniform | gaussian
+      gaussian_sigma_ratio: 0.25    # sigma = window_size * ratio
 
 # ========================================
 # LOGGING CONFIGURATION

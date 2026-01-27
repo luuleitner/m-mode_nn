@@ -16,8 +16,13 @@ from preprocessing.dimension_checker import DimensionChecker
 from config.configurator import load_config, setup_environment
 from visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
-from preprocessing.signal_utils import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, extract_sliding_windows
-# from preprocessing.signal_utils import analytic_signal
+from preprocessing.signal_utils import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, extract_sliding_windows, apply_joystick_filters
+from preprocessing.label_logic.labeling import (
+    create_derivative_labels,
+    create_edge_to_peak_labels,
+    create_edge_to_derivative_labels
+)
+from preprocessing.soft_labels import SoftLabelGenerator, window_hard_labels
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("MAIN")
@@ -95,6 +100,29 @@ class DataProcessor():
         # Sequences
         self._sequence_window = self._config.preprocess.sequencing.window
 
+        # Output mode: transformer (sequenced) or flat (CNN-ready)
+        self._output_mode = getattr(self._config.preprocess.output, 'mode', 'transformer')
+
+        # Label configuration
+        self._label_method = getattr(self._config.preprocess.labels, 'method', 'derivative')
+        self._label_threshold = getattr(self._config.preprocess.labels, 'threshold_percent', 5.0)
+        self._label_axis = getattr(self._config.preprocess.labels, 'axis', 'x')
+
+        # Soft labels configuration
+        soft_labels_config = getattr(self._config.preprocess.labels, 'soft_labels', None)
+        self._soft_labels_enabled = getattr(soft_labels_config, 'enabled', False) if soft_labels_config else False
+
+        if self._soft_labels_enabled:
+            self._soft_label_gen = SoftLabelGenerator(
+                num_classes=getattr(soft_labels_config, 'num_classes', 3),
+                weighting=getattr(soft_labels_config, 'weighting', 'gaussian'),
+                gaussian_sigma_ratio=getattr(soft_labels_config, 'gaussian_sigma_ratio', 0.25)
+            )
+            self._num_label_classes = getattr(soft_labels_config, 'num_classes', 3)
+        else:
+            self._soft_label_gen = None
+            self._num_label_classes = 1  # Hard labels
+
         # Saving
         self._save_strategy = self._config.preprocess.data.save_ftype
         self._save_path_id = self._config.preprocess.data.id
@@ -111,7 +139,11 @@ class DataProcessor():
         if self._data_path_raw is None:
             raise ValueError("Data path not found in the config file under 'experiment: path'")
 
-        self._file_save_id = f'TokenWin{int(self._config.preprocess.tokenization.window):02}_TokenStr{int(self._config.preprocess.tokenization.stride):02}_SeqWin{int(self._config.preprocess.sequencing.window):02}'
+        if self._output_mode == 'transformer':
+            self._file_save_id = f'TokenWin{int(self._config.preprocess.tokenization.window):02}_TokenStr{int(self._config.preprocess.tokenization.stride):02}_SeqWin{int(self._config.preprocess.sequencing.window):02}'
+        else:  # flat mode
+            soft_suffix = '_soft' if self._soft_labels_enabled else ''
+            self._file_save_id = f'TokenWin{int(self._config.preprocess.tokenization.window):02}_TokenStr{int(self._config.preprocess.tokenization.stride):02}_Flat{soft_suffix}'
 
         # Create unique output folder structure: dataset/params/run_timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -134,9 +166,11 @@ class DataProcessor():
         # (1) PREPROCESS: Load folder structure depending on selected strategy
         if self._config.preprocess.data.strategy == "all":
             self._load_fstructure()
-        elif self._config.preprocess.data.strategy == "specific":
-            self._load_fstructure(session=self._config.preprocess.configs.specific.selection.session,
-                                  exp=self._config.preprocess.configs.specific.selection.experiment)
+        elif self._config.preprocess.data.strategy == "selection_file":
+            selection_path = self._config.preprocess.data.selection_file
+            self._load_fstructure_from_selection(selection_path)
+        else:
+            raise ValueError(f"Unknown strategy: {self._config.preprocess.data.strategy}. Use 'all' or 'selection_file'")
         # ---------------------------------------------
         # (2) PREPROCESS: Process each experiment found in the file structure
         
@@ -262,7 +296,13 @@ class DataProcessor():
                 'token_window': self._token_window,
                 'token_stride': self._token_stride,
                 'sequence_window': self._sequence_window,
-                'save_strategy': self._save_strategy
+                'save_strategy': self._save_strategy,
+                'output_mode': self._output_mode,
+                'label_method': self._label_method,
+                'label_threshold': self._label_threshold,
+                'label_axis': self._label_axis,
+                'soft_labels_enabled': self._soft_labels_enabled,
+                'num_label_classes': self._num_label_classes
             },
             'input_data': {
                 'data_path_raw': self._data_path_raw,
@@ -289,22 +329,137 @@ class DataProcessor():
         logger.info(f"Replication info saved: {replication_path}")
 
 
-    def _load_fstructure(self, session=None, exp=None):
-        # Recursively search for valid experiment folders
-        self._fstructure = [f for f in glob.glob(os.path.join(self._data_path_raw, "session*", "*"), recursive=True)
-                            if os.path.isdir(f) and os.path.basename(f).isdigit()]
+    def _load_fstructure(self):
+        """Load all experiment folders from raw data directory."""
+        all_paths = glob.glob(os.path.join(self._data_path_raw, "session*", "*"), recursive=True)
+        self._fstructure = sorted([
+            f for f in all_paths
+            if os.path.isdir(f) and os.path.basename(f).isdigit()
+        ])
+        logger.info(f"Found {len(self._fstructure)} experiments in {self._data_path_raw}")
 
-        # Apply session/experiment filters if strategy is 'specific'
-        if exp and not session:
-            logger.error("Cannot filter by 'experiment' without specifying 'session'.")
-            return
+    def _load_fstructure_from_selection(self, selection_path):
+        """
+        Load experiment selection from a CSV or YAML selection file.
 
-        if session:
-            self._fstructure = [f for f in self._fstructure
-                                if any(f'session{s}' in os.path.split(os.path.dirname(f))[1]
-                                       for s in session)]
-            if exp:
-                self._fstructure = [f for f in self._fstructure if int(os.path.basename(f)) in exp]
+        CSV format (recommended - easy to edit in spreadsheet):
+            session,experiment,include
+            session14_W_1,0,1
+            session14_W_1,1,0    # excluded (include=0)
+
+        YAML format:
+            mode: "include" | "exclude"
+            sessions:
+              session14_W_1:
+                experiments: [0, 1, 2] | "all"
+        """
+        import csv as csv_module
+
+        # Resolve path
+        if not os.path.isabs(selection_path):
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            selection_path = os.path.join(project_root, selection_path)
+
+        if not os.path.exists(selection_path):
+            raise FileNotFoundError(f"Selection file not found: {selection_path}")
+
+        # Detect file type and load
+        if selection_path.endswith('.csv'):
+            self._fstructure = self._load_selection_csv(selection_path, csv_module)
+        else:
+            self._fstructure = self._load_selection_yaml(selection_path)
+
+    def _load_selection_csv(self, csv_path, csv_module):
+        """Load selection from CSV file."""
+        selected_experiments = []
+
+        with open(csv_path, 'r', newline='') as f:
+            reader = csv_module.DictReader(f)
+
+            for row in reader:
+                session = row['session']
+                experiment = int(row['experiment'])
+                include = row.get('include', '1')
+
+                # Handle various include formats: 1, 0, true, false, yes, no
+                if str(include).lower() in ('1', 'true', 'yes', ''):
+                    exp_path = os.path.join(self._data_path_raw, session, str(experiment))
+                    if os.path.isdir(exp_path):
+                        selected_experiments.append(exp_path)
+                    else:
+                        logger.warning(f"Experiment path not found: {exp_path}")
+
+        selected_experiments = sorted(selected_experiments)
+        logger.info(f"CSV selection loaded: {len(selected_experiments)} experiments")
+        return selected_experiments
+
+    def _load_selection_yaml(self, yaml_path):
+        """Load selection from YAML file."""
+        with open(yaml_path, 'r') as f:
+            selection = yaml.safe_load(f)
+
+        mode = selection.get('mode', 'include')
+        session_default = selection.get('session_default', 'all')
+        sessions_config = selection.get('sessions', {})
+
+        # Get all available experiments
+        all_experiments = [f for f in glob.glob(os.path.join(self._data_path_raw, "session*", "*"), recursive=True)
+                          if os.path.isdir(f) and os.path.basename(f).isdigit()]
+
+        # Build lookup: session_name -> experiment paths
+        session_experiments = {}
+        for exp_path in all_experiments:
+            session_dir = os.path.basename(os.path.dirname(exp_path))
+            if session_dir not in session_experiments:
+                session_experiments[session_dir] = []
+            session_experiments[session_dir].append(exp_path)
+
+        selected_experiments = []
+
+        if mode == 'include':
+            for session_name, session_cfg in sessions_config.items():
+                if session_name not in session_experiments:
+                    logger.warning(f"Session '{session_name}' not found, skipping")
+                    continue
+
+                exp_paths = session_experiments[session_name]
+                experiments_spec = session_cfg.get('experiments', session_default)
+                exclude_exp = session_cfg.get('exclude_experiments', [])
+
+                if experiments_spec == "none":
+                    continue
+                elif experiments_spec == "all":
+                    for p in exp_paths:
+                        exp_num = int(os.path.basename(p))
+                        if exp_num not in exclude_exp:
+                            selected_experiments.append(p)
+                else:
+                    for p in exp_paths:
+                        exp_num = int(os.path.basename(p))
+                        if exp_num in experiments_spec and exp_num not in exclude_exp:
+                            selected_experiments.append(p)
+
+        elif mode == 'exclude':
+            for session_name, exp_paths in session_experiments.items():
+                if session_name in sessions_config:
+                    session_cfg = sessions_config[session_name]
+                    experiments_spec = session_cfg.get('experiments', 'none')
+
+                    if experiments_spec == "all":
+                        continue
+                    elif experiments_spec == "none":
+                        selected_experiments.extend(exp_paths)
+                    else:
+                        for p in exp_paths:
+                            exp_num = int(os.path.basename(p))
+                            if exp_num not in experiments_spec:
+                                selected_experiments.append(p)
+                else:
+                    selected_experiments.extend(exp_paths)
+
+        selected_experiments = sorted(selected_experiments)
+        logger.info(f"YAML selection loaded: {len(selected_experiments)} experiments from {len(sessions_config)} sessions")
+        return selected_experiments
 
 
     def _process_experiments(self):
@@ -490,52 +645,124 @@ class DataProcessor():
         return data
 
 
-    def _tokenizer(self, data, label, plot_flag):
+    def _tokenizer(self, data, joystick_data, plot_flag):
         # Determine number of sliding windows
         last_axis_len = data.shape[-1]
-        num_windows = (last_axis_len - self._token_window) //  self._token_stride + 1
+        num_windows = (last_axis_len - self._token_window) // self._token_stride + 1
 
         # Calculate window start and end indices - for metadata usage only
         starts = [i * self._token_stride for i in range(num_windows)]
         ends = [start + self._token_window for start in starts]
 
-        #Extracts sliding windows (tokens)
-        token = extract_sliding_windows(data, ax=2, window_size=self._token_window, stride=self._token_stride) # (chs, samples, num_windows, window_size)
-        token = token.swapaxes(0,2).swapaxes(1,2)  # (num_windows, chs, samples, window_size)
-        token_label = np.squeeze(extract_sliding_windows(label, ax=2, window_size=self._token_window, stride=self._token_stride)) # (labels, num_windows, window_size)
-        token_label = token_label.swapaxes(0,1)  # (num_windows, labels, window_size)
+        # Extract sliding windows (tokens) from ultrasound data
+        token = extract_sliding_windows(data, ax=2, window_size=self._token_window, stride=self._token_stride)
+        token = token.swapaxes(0, 2).swapaxes(1, 2)  # (num_windows, chs, samples, window_size)
 
-        token_label_mean = np.mean(token_label, axis=-1)
-        x_label =  np.squeeze(token_label_mean[:, 1])
-        y_label =  np.squeeze(token_label_mean[:, 2])
-
-        token_label = (
-                (x_label < 0).astype(int) * 2 +
-                (y_label < 0).astype(int)
-        )
-        token_label = np.expand_dims(token_label, axis=1)
+        # Create labels using the labeling pipeline
+        token_label = self._create_token_labels(joystick_data, num_windows)
 
         # Add synthetic start/end markers to each token
         if self._set_token_startendID_flag:
             token = self.__add_startend_seq(token, self._minmax_normalization_values)
-        else:
-            pass
 
-        # Clip accessive Tokens that do not fit into sequencer (depends on the window size)
-        clipfloor = int(np.floor(token.shape[0] / self._sequence_window) * self._sequence_window)
-        token = token[:clipfloor]
-        token_label = token_label[:clipfloor]
-        starts = starts[:clipfloor]
-        ends = ends[:clipfloor]
+        # Clip excess tokens that don't fit into sequencer (for transformer mode only)
+        if self._output_mode == 'transformer':
+            clipfloor = int(np.floor(token.shape[0] / self._sequence_window) * self._sequence_window)
+            token = token[:clipfloor]
+            token_label = token_label[:clipfloor]
+            starts = starts[:clipfloor]
+            ends = ends[:clipfloor]
 
         # Create meta datafile
-        self._token_len = len(token_label)
+        self._token_len = token.shape[0]
         self.__create_meta(starts, ends, token_label)
 
         return token, token_label
 
+    def _create_token_labels(self, joystick_data, num_tokens):
+        """
+        Create token labels using the labeling pipeline from labeling.py.
+
+        Args:
+            joystick_data: Joystick data array - either [4, pulses] or [1, 4, pulses] after stacking
+            num_tokens: Expected number of tokens
+
+        Returns:
+            token_label: [num_tokens, num_classes] for soft labels or [num_tokens, 1] for hard labels
+        """
+        # Handle different joystick data shapes
+        # After loading: joystick is [pulses, 4], transposed to [4, pulses]
+        # After stacking (if single file): could be [1, 4, pulses]
+        if joystick_data.ndim == 3:
+            joystick_data = joystick_data[0]  # Remove batch dimension: [4, pulses]
+
+        # Extract position data
+        # Channels: 0=unused, 1=X position, 2=Y position, 3=trigger
+        x_position = joystick_data[1, :]
+        y_position = joystick_data[2, :]
+
+        # Select axis based on config
+        if self._label_axis == 'x':
+            position_data = x_position
+        elif self._label_axis == 'y':
+            position_data = y_position
+        else:  # combined - use X for now, can extend later
+            position_data = x_position
+
+        # Compute derivative for labeling methods that need it
+        derivative = np.gradient(position_data)
+
+        # Create per-sample hard labels based on configured method
+        if self._label_method == 'derivative':
+            hard_labels, _ = create_derivative_labels(derivative, self._label_threshold)
+        elif self._label_method == 'edge_to_peak':
+            hard_labels, _, _ = create_edge_to_peak_labels(position_data, derivative, self._label_threshold)
+        elif self._label_method == 'edge_to_derivative':
+            hard_labels, _, _, _ = create_edge_to_derivative_labels(position_data, derivative, self._label_threshold)
+        else:
+            raise ValueError(f"Unknown label method: {self._label_method}")
+
+        # Convert to token-level labels
+        if self._soft_labels_enabled:
+            # Soft labels: probability distributions per token
+            token_label = self._soft_label_gen.create_soft_labels(
+                hard_labels, self._token_window, self._token_stride
+            )
+        else:
+            # Hard labels: majority vote per token window
+            token_labels_1d = window_hard_labels(
+                hard_labels, self._token_window, self._token_stride, method='majority'
+            )
+            token_label = np.expand_dims(token_labels_1d, axis=1)
+
+        # Ensure label count matches expected token count (joystick/US sample counts may differ slightly)
+        if len(token_label) != num_tokens:
+            logger.warning(f"Label count ({len(token_label)}) != token count ({num_tokens}), truncating/padding")
+            if len(token_label) > num_tokens:
+                token_label = token_label[:num_tokens]
+            else:
+                # Pad with zeros (noise class)
+                pad_shape = (num_tokens - len(token_label), *token_label.shape[1:])
+                padding = np.zeros(pad_shape, dtype=token_label.dtype)
+                token_label = np.concatenate([token_label, padding], axis=0)
+
+        return token_label
+
 
     def _sequencer(self, data, label):
+        """
+        Route to appropriate output format based on output_mode config.
+
+        Transformer mode: Groups tokens into sequences
+        Flat mode: Returns tokens directly (for CNN training)
+        """
+        if self._output_mode == 'transformer':
+            return self._sequence_for_transformer(data, label)
+        else:  # flat mode
+            return self._output_flat(data, label)
+
+    def _sequence_for_transformer(self, data, label):
+        """Group tokens into sequences for transformer training."""
         num_sequences = int(data.shape[0] // self._sequence_window)
         sequence = data.reshape(num_sequences, self._sequence_window, data.shape[1], data.shape[2], data.shape[3])
         sequence_label = label.reshape(num_sequences, self._sequence_window, label.shape[-1])
@@ -545,6 +772,17 @@ class DataProcessor():
         token2sequence_id = np.repeat(sequence_ids, self._sequence_window).astype(int)
 
         return sequence, sequence_label, token2sequence_id
+
+    def _output_flat(self, data, label):
+        """Direct token output for CNN training - no sequencing."""
+        # Token IDs are just sequential indices
+        token_ids = np.arange(data.shape[0]).astype(int)
+
+        # Data and labels remain as-is (no reshaping into sequences)
+        # data shape: [num_tokens, C, H, W]
+        # label shape: [num_tokens, num_classes] for soft or [num_tokens, 1] for hard
+
+        return data, label, token_ids
 
 
 
@@ -566,7 +804,15 @@ class DataProcessor():
         participant_id = np.repeat(self._participant_id, self._token_len)
         session_id = np.repeat(self._session_id, self._token_len)
         experiment_id = np.repeat(self._experiment_id, self._token_len)
-        meta = pd.DataFrame(np.stack([tid, starts, ends, participant_id, session_id, experiment_id, np.squeeze(token_label)], axis=1),
+
+        # Handle soft labels (multi-column) vs hard labels (single column)
+        if self._soft_labels_enabled:
+            # For soft labels, store the argmax (dominant class) in metadata
+            label_for_meta = np.argmax(token_label, axis=1)
+        else:
+            label_for_meta = np.squeeze(token_label)
+
+        meta = pd.DataFrame(np.stack([tid, starts, ends, participant_id, session_id, experiment_id, label_for_meta], axis=1),
                             columns=self._metastructure)
         self._metadata = pd.concat([self._metadata, meta], axis=0, ignore_index=True)
 
@@ -580,10 +826,20 @@ class DataProcessor():
             os.makedirs(os.path.dirname(experiment_path))
 
         backend = self._save_strategy
+
+        # Determine label dtype based on soft/hard labels
+        label_dtype = 'float32' if self._soft_labels_enabled else 'int64'
+
         file_attr = f"_{backend}file"
         if not hasattr(self, file_attr) or getattr(self, file_attr) is None:
-            setattr(self, file_attr, init_dataset(path=experiment_path, data_size=data.shape[1:], backend=backend))
-        append_and_save(experiment_path, getattr(self, file_attr), data, label, config=self._config, backend=backend)   # [B, S, C, E] B...batch, S...sequence, C...channel, F...feature (flattend A-mode lines)
+            setattr(self, file_attr, init_dataset(
+                path=experiment_path,
+                data_size=data.shape[1:],
+                backend=backend,
+                label_shape=label.shape[1:],
+                label_dtype=label_dtype
+            ))
+        append_and_save(experiment_path, getattr(self, file_attr), data, label, config=self._config, backend=backend)
 
     def __clean_datapath(self, path):
         normalized_path = os.path.normpath(self._experiment_file_id)
