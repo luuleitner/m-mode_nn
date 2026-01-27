@@ -168,7 +168,7 @@ preprocess:
   tokenization:
     tokens2file: true
     startendID: false
-    window: 50
+    window: 25
     stride: 2
     description: "Specifies the tokenization process."
 
