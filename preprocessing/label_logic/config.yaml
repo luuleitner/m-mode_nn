@@ -10,8 +10,8 @@ files:
 joystick_column: 2  # 1 = x, 2 = y
 
 labels:
-  method: "edge_to_peak"  # "derivative" (threshold-based) or "edge_to_peak" (edge detection + peak finding)
-  threshold_percent: 10.0  # percentage of max absolute derivative value for threshold (+/-)
+  method: "edge_to_derivative"  # "derivative" | "edge_to_peak" | "edge_to_derivative"
+  threshold_percent: 10.0  # percentage of max absolute value for threshold (+/-)
 
 display:
   show_raw_trace: true  # show unfiltered raw data as third trace
