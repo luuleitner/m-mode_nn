@@ -163,6 +163,123 @@ def create_edge_to_peak_labels(filtered_data, derivative, threshold_percent=5.0)
     return labels, threshold, markers
 
 
+def create_edge_to_derivative_labels(filtered_data, derivative, threshold_percent=5.0):
+    """
+    Create labels based on edge detection on position and derivative threshold crossing.
+
+    Algorithm:
+    1. Detect rising edge on filtered position crossing upper threshold (start of upward movement)
+    2. Detect falling edge on filtered position crossing lower threshold (start of downward movement)
+    3. Find when derivative crosses back through derivative threshold (end of movement)
+    4. Label region between edge and derivative threshold crossing
+
+    This hybrid approach uses position displacement to detect movement start (avoiding
+    spring-back false positives) and derivative threshold to detect movement end.
+
+    Args:
+        filtered_data: Filtered joystick position data
+        derivative: Derivative of the filtered data
+        threshold_percent: Percentage of max value for threshold detection (applied to both signals)
+
+    Returns:
+        labels: Array of labels (0=noise, 1=upward, 2=downward)
+        threshold: Position threshold value used for edge detection
+        markers: Dict with 'edge_up', 'edge_down', 'deriv_cross_up', 'deriv_cross_down' indices
+    """
+    n = len(derivative)
+    labels = np.zeros(n, dtype=np.int8)
+
+    # Calculate position threshold for edge detection
+    pos_max = np.max(np.abs(filtered_data))
+    pos_threshold = pos_max * (threshold_percent / 100.0)
+
+    # Calculate derivative threshold for end detection
+    deriv_max = np.max(np.abs(derivative))
+    deriv_threshold = deriv_max * (threshold_percent / 100.0)
+
+    # Store markers for visualization
+    edge_up_indices = []
+    edge_down_indices = []
+    deriv_cross_up_indices = []
+    deriv_cross_down_indices = []
+
+    # Find rising edges on POSITION data (crossing upper threshold from below)
+    above_upper = filtered_data > pos_threshold
+    rising_edges = np.where(np.diff(above_upper.astype(int)) == 1)[0] + 1
+
+    # Find falling edges on POSITION data (crossing lower threshold from above)
+    below_lower = filtered_data < -pos_threshold
+    falling_edges = np.where(np.diff(below_lower.astype(int)) == 1)[0] + 1
+
+    # Process rising edges (upward movement)
+    for edge_idx in rising_edges:
+        edge_up_indices.append(edge_idx)
+
+        # Find when derivative drops back below threshold (movement ending)
+        cross_idx = _find_derivative_threshold_crossing(
+            derivative, edge_idx, deriv_threshold, direction='down'
+        )
+        if cross_idx is not None:
+            deriv_cross_up_indices.append(cross_idx)
+            # Label region between edge and derivative crossing as upward (1)
+            labels[edge_idx:cross_idx + 1] = 1
+
+    # Process falling edges (downward movement)
+    for edge_idx in falling_edges:
+        edge_down_indices.append(edge_idx)
+
+        # Find when derivative rises back above -threshold (movement ending)
+        cross_idx = _find_derivative_threshold_crossing(
+            derivative, edge_idx, deriv_threshold, direction='up'
+        )
+        if cross_idx is not None:
+            deriv_cross_down_indices.append(cross_idx)
+            # Label region between edge and derivative crossing as downward (2)
+            labels[edge_idx:cross_idx + 1] = 2
+
+    markers = {
+        'edge_up': np.array(edge_up_indices),
+        'edge_down': np.array(edge_down_indices),
+        'deriv_cross_up': np.array(deriv_cross_up_indices),
+        'deriv_cross_down': np.array(deriv_cross_down_indices),
+    }
+
+    return labels, pos_threshold, deriv_threshold, markers
+
+
+def _find_derivative_threshold_crossing(derivative, start_idx, threshold, direction='down'):
+    """
+    Find when derivative crosses back through threshold after start_idx.
+
+    Args:
+        derivative: The derivative signal array
+        start_idx: Index to start searching from
+        threshold: Absolute threshold value
+        direction: 'down' = find where derivative drops below +threshold (for upward movements)
+                   'up' = find where derivative rises above -threshold (for downward movements)
+
+    Returns:
+        Index of the crossing, or None if not found
+    """
+    n = len(derivative)
+
+    if start_idx >= n - 1:
+        return None
+
+    if direction == 'down':
+        # For upward movement: derivative starts high (positive), find where it drops below threshold
+        for i in range(start_idx + 1, n):
+            if derivative[i] < threshold:
+                return i
+    else:  # direction == 'up'
+        # For downward movement: derivative starts low (negative), find where it rises above -threshold
+        for i in range(start_idx + 1, n):
+            if derivative[i] > -threshold:
+                return i
+
+    return None
+
+
 def _find_next_peak(signal, start_idx, direction='max', max_search=None):
     """
     Find the next local peak (max or min) after start_idx.
