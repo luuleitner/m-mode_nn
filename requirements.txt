@@ -10,6 +10,10 @@ pandas>=2.0.0
 scikit-learn>=1.2.0
 scikit-image>=0.20.0
 
+# Classification
+xgboost>=2.0.0
+optuna>=3.0.0  # Optional: for hyperparameter tuning
+
 # Data Storage
 h5py>=3.8.0
 zarr>=2.14.0
