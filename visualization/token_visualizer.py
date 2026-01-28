@@ -37,7 +37,7 @@ from preprocessing.signal_utils import apply_joystick_filters
 
 
 class TokenVisualizer:
-    def __init__(self, processed_data_path: str, config_path: str = None):
+    def __init__(self, processed_data_path, config_path=None):
         """
         Initialize the token visualizer.
 
@@ -94,7 +94,7 @@ class TokenVisualizer:
 
         print(f"Found {len(self.h5_files)} H5 files")
 
-    def load_random_sample(self, seed: int = None):
+    def load_random_sample(self, seed=None):
         """
         Load a random token sample.
 
@@ -137,7 +137,7 @@ class TokenVisualizer:
             'experiment_id': experiment_id
         }
 
-    def _get_label_class(self, label_data: np.ndarray) -> int:
+    def _get_label_class(self, label_data):
         """
         Determine the class from label data.
 
@@ -156,7 +156,7 @@ class TokenVisualizer:
             counts = [np.sum(label_flat == i) for i in range(3)]
             return int(np.argmax(counts))
 
-    def load_sample_by_label(self, target_label: int, seed: int = None):
+    def load_sample_by_label(self, target_label, seed=None):
         """
         Load a random token sample with a specific label class.
 
@@ -210,7 +210,7 @@ class TokenVisualizer:
 
         raise ValueError(f"No samples found with label {target_label}")
 
-    def load_raw_data(self, session_id: str, participant_id: str, experiment_id: str):
+    def load_raw_data(self, session_id, participant_id, experiment_id):
         """
         Load raw US and joystick data for an experiment.
         """
@@ -244,7 +244,7 @@ class TokenVisualizer:
             'exp_folder': exp_folder
         }
 
-    def compute_token_window_indices(self, sample_idx: int, num_pulses: int):
+    def compute_token_window_indices(self, sample_idx, num_pulses):
         """
         Compute the pulse indices for a given token sample index.
         """
@@ -257,7 +257,7 @@ class TokenVisualizer:
 
         return start_pulse, end_pulse
 
-    def create_labels_from_joystick(self, joystick_data: np.ndarray):
+    def create_labels_from_joystick(self, joystick_data):
         """
         Create per-sample labels from joystick data.
         Applies the same filters as visualize.py for consistency.
@@ -297,7 +297,7 @@ class TokenVisualizer:
 
         return None, position, derivative, None, None, None
 
-    def visualize_sample(self, sample: dict = None, seed: int = None):
+    def visualize_sample(self, sample=None, seed=None):
         """
         Create the visualization for a token sample.
         """
@@ -663,7 +663,7 @@ class TokenVisualizer:
             fig.add_trace(
                 go.Heatmap(
                     z=ch_data,
-                    colorscale='Viridis',
+                    colorscale='greys',
                     showscale=(ch_idx == 2),
                     colorbar=dict(title="Amplitude", x=1.02) if ch_idx == 2 else None
                 ),
@@ -691,7 +691,7 @@ class TokenVisualizer:
 
         return fig
 
-    def show(self, seed: int = None):
+    def show(self, seed=None):
         """Show visualization for a random sample in browser."""
         import plotly.io as pio
         pio.renderers.default = 'browser'
@@ -699,7 +699,7 @@ class TokenVisualizer:
         fig = self.visualize_sample(seed=seed)
         fig.show()
 
-    def show_by_class(self, seed: int = None):
+    def show_by_class(self, seed=None):
         """
         Show 3 separate visualizations, one for each label class.
 

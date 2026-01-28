@@ -6,7 +6,6 @@ import pandas as pd
 from pathlib import Path
 import random
 from collections import defaultdict
-from typing import List, Dict, Tuple, Optional, Literal
 from sklearn.model_selection import train_test_split
 
 
@@ -21,32 +20,26 @@ class FilteredSplitH5Dataset(Dataset):
     """
 
     def __init__(self,
-                 metadata_file: str,
-                 target_batch_size: int = 200,
-                 dataset_key: str = 'token',
-                 data_root: Optional[str] = None,
-                 # What to return
-                 split_type: Literal['train', 'test', 'val'] = 'train',
-                 # Filters for test/val data (train gets everything else)
-                 test_val_participant_filter: Optional[List] = None,
-                 test_val_session_filter: Optional[List] = None,
-                 test_val_experiment_filter: Optional[List] = None,
-                 test_val_label_filter: Optional[List] = None,
-                 # How to split the filtered test/val data
-                 test_val_split_ratio: float = 0.5,  # 0.5 = 50% test, 50% val
-                 split_level: Literal['sequence', 'experiment'] = 'sequence',
-                 random_seed: int = 42,
-                 # Global filters (applied to ALL data before train/test/val split)
-                 global_participant_filter: Optional[List] = None,
-                 global_session_filter: Optional[List] = None,
-                 global_experiment_filter: Optional[List] = None,
-                 global_label_filter: Optional[List] = None,
-                 # Shuffling
-                 shuffle_experiments: bool = True,
-                 shuffle_sequences: bool = True,
-                 # Print control
-                 _suppress_split_info: bool = False,
-                 _suppress_metadata_info: bool = False):
+                 metadata_file,
+                 target_batch_size=200,
+                 dataset_key='token',
+                 data_root=None,
+                 split_type='train',
+                 test_val_participant_filter=None,
+                 test_val_session_filter=None,
+                 test_val_experiment_filter=None,
+                 test_val_label_filter=None,
+                 test_val_split_ratio=0.5,
+                 split_level='sequence',
+                 random_seed=42,
+                 global_participant_filter=None,
+                 global_session_filter=None,
+                 global_experiment_filter=None,
+                 global_label_filter=None,
+                 shuffle_experiments=True,
+                 shuffle_sequences=True,
+                 _suppress_split_info=False,
+                 _suppress_metadata_info=False):
         """
         Args:
             split_type: Which dataset to return ('train', 'test', 'val')
@@ -88,7 +81,7 @@ class FilteredSplitH5Dataset(Dataset):
 
         self._print_dataset_info()
 
-    def _load_metadata(self, metadata_file: str, suppress_print: bool = False):
+    def _load_metadata(self, metadata_file, suppress_print=False):
         """Load and standardize metadata"""
 
         self.full_metadata = pd.read_csv(
@@ -288,7 +281,7 @@ class FilteredSplitH5Dataset(Dataset):
 
         return test_data, val_data
 
-    def _process_metadata(self, shuffle_experiments: bool, shuffle_sequences: bool):
+    def _process_metadata(self, shuffle_experiments, shuffle_sequences):
         """Process metadata and group by experiment"""
 
         if len(self.metadata) == 0:
@@ -351,7 +344,7 @@ class FilteredSplitH5Dataset(Dataset):
     def __len__(self):
         return len(self.batch_mapping)
 
-    def __getitem__(self, batch_idx: int) -> torch.Tensor:
+    def __getitem__(self, batch_idx):
         """Load and return a batch of sequences"""
 
         if batch_idx >= len(self.batch_mapping):
@@ -400,7 +393,7 @@ class FilteredSplitH5Dataset(Dataset):
 
         return torch.from_numpy(final_batch)
 
-    def get_batch_metadata(self, batch_idx: int) -> pd.DataFrame:
+    def get_batch_metadata(self, batch_idx):
         """Get metadata for all sequences in a specific batch"""
 
         if batch_idx >= len(self.batch_mapping):
@@ -411,7 +404,7 @@ class FilteredSplitH5Dataset(Dataset):
 
         return pd.DataFrame(metadata_list)
 
-    def get_split_info(self) -> Dict:
+    def get_split_info(self):
         """Get information about the current splits"""
 
         info = {
@@ -440,28 +433,23 @@ class FilteredSplitH5Dataset(Dataset):
 
 
 def create_filtered_split_datasets(
-        metadata_file: str,
-        target_batch_size: int = 200,
-        dataset_key: str = 'token',  # ADD THIS LINE
-        # Test/Val filters - data matching these becomes test/val
-        test_val_session_filter: Optional[List] = None,
-        test_val_participant_filter: Optional[List] = None,
-        test_val_experiment_filter: Optional[List] = None,
-        test_val_label_filter: Optional[List] = None,
-        # How to split the filtered data
-        test_val_split_ratio: float = 0.5,  # 0.5 = 50% test, 50% val
-        split_level: str = 'sequence',
-        random_seed: int = 353,  # ADD THIS LINE
-        # Global filters  # ADD THESE LINES
-        global_participant_filter: Optional[List] = None,
-        global_session_filter: Optional[List] = None,
-        global_experiment_filter: Optional[List] = None,
-        global_label_filter: Optional[List] = None,
-        # Shuffling  # ADD THESE LINES
-        shuffle_experiments: bool = True,
-        shuffle_sequences: bool = True,
-        **kwargs
-) -> Tuple[Dataset, Dataset, Dataset]:
+        metadata_file,
+        target_batch_size=200,
+        dataset_key='token',
+        test_val_session_filter=None,
+        test_val_participant_filter=None,
+        test_val_experiment_filter=None,
+        test_val_label_filter=None,
+        test_val_split_ratio=0.5,
+        split_level='sequence',
+        random_seed=353,
+        global_participant_filter=None,
+        global_session_filter=None,
+        global_experiment_filter=None,
+        global_label_filter=None,
+        shuffle_experiments=True,
+        shuffle_sequences=True,
+        **kwargs):
     """
     Convenience function to create datasets with filtered splitting
 
