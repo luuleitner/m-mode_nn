@@ -168,12 +168,12 @@ preprocess:
   tokenization:
     tokens2file: true
     startendID: false
-    window: 25
+    window: 18
     stride: 2
     description: "Specifies the tokenization process."
 
   sequencing:
-    window: 10
+    window: 15
 
   output:
     mode: "flat"             # transformer | flat (flat for CNN, no sequencing)
