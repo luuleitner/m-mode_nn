@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Transformer Autoencoder for Ultrasound M-Mode Data
 Transformer-based alternative to CNN autoencoder for sequence reconstruction.

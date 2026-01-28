@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Generate a CSV selection file from available experiments.
 
