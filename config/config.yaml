@@ -109,6 +109,32 @@ ml:
     shuffle_experiments: true               # Randomize experiment order
     shuffle_sequences: true                 # Randomize sequence order within experiments
 
+    # =========================================
+    # STEP 5: CLASS BALANCING (train set only)
+    # =========================================
+    # Balances class distribution by oversampling minority classes.
+    # Majority class (0) appears exactly once, minority classes (1, 2)
+    # are oversampled with augmentation to match majority count.
+    balance_classes: true                   # Enable balanced batch construction
+    balance_strategy: "oversample"          # oversample | undersample
+
+    oversample_config:
+      method: "augment"                     # duplicate | augment | mixed
+      target_ratio: 1.0                     # 1.0 = match majority class count
+      augment_ratio: 0.5                    # For 'mixed': ratio of augmented vs duplicated
+
+      # Augmentation settings (semantically preserving transforms)
+      augmentations:
+        noise:
+          enabled: true
+          std: 0.02                         # Gaussian noise standard deviation
+        scale:
+          enabled: true
+          range: [0.9, 1.1]                 # Amplitude scaling range
+        shift:
+          enabled: true
+          max_shift: 3                      # Max temporal shift in samples
+
   # Model Architecture
   model:
     type: "CNNAutoencoder"            # "CNNAutoencoder", "TransformerAutoencoder", "HybridTransformerAutoencoder"
@@ -151,11 +177,10 @@ ml:
       dropout_rate: 0.0              # Dropout rate (if applicable)
       batch_norm: true               # Use batch normalization
 
-    # Class Balancing (for imbalanced datasets)
+    # Class Balancing at Training Time
     class_balancing:
-      enabled: true                  # Enable class balancing
-      method: "both"                 # weighted_sampling | weighted_loss | both
-      # Class weights computed automatically from inverse frequency
+      enabled: true                  # Enable weighted loss
+      method: "weighted_loss"        # weighted_loss
 
     # Checkpointing
     checkpointing:

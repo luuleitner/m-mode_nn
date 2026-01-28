@@ -2,7 +2,7 @@
 # LABEL EXTRACTION CONFIGURATION
 # ==================================================
 # Single source of truth for all labeling parameters.
-# Used by: processor.py, data_visualization.py, visualize.py
+# Used by: processor.py, data_visualization_raw-processed.py, visualize.py
 
 # --------------------------------------------------
 # LABELING METHOD & PARAMETERS

@@ -16,7 +16,7 @@ import pickle
 from datetime import datetime
 
 import torch
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -153,42 +153,27 @@ def load_or_create_datasets(config):
 
 
 def create_dataloaders(train_ds, val_ds, test_ds, config):
-    """Create data loaders with optional balanced sampling."""
+    """
+    Create data loaders for training.
+
+    Note: Class balancing is now handled at dataset construction time
+    (balance_classes=True in config), not at DataLoader level.
+    The train dataset already contains balanced batches if enabled.
+    """
     resource_config = config.get_resource_config()
 
-    # Check if class balancing is enabled
-    balancing_config = getattr(config.ml.training, 'class_balancing', None)
-    use_balanced_sampling = (
-        balancing_config is not None and
-        getattr(balancing_config, 'enabled', False) and
-        getattr(balancing_config, 'method', '') in ['weighted_sampling', 'both']
-    )
+    # Check if dataset has balanced batches
+    if hasattr(train_ds, 'balance_classes') and train_ds.balance_classes:
+        logger.info("Using pre-balanced batches (balanced at dataset construction)")
 
-    if use_balanced_sampling:
-        logger.info("Using weighted sampling for class balancing")
-        sample_weights = train_ds.get_sample_weights()
-        sampler = WeightedRandomSampler(
-            weights=sample_weights,
-            num_samples=len(sample_weights),
-            replacement=True
-        )
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=None,  # Pre-batched
-            sampler=sampler,  # Use sampler instead of shuffle
-            num_workers=resource_config['num_workers'],
-            pin_memory=resource_config['pin_memory'],
-            prefetch_factor=resource_config['prefetch_factor']
-        )
-    else:
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=None,  # Pre-batched
-            shuffle=True,
-            num_workers=resource_config['num_workers'],
-            pin_memory=resource_config['pin_memory'],
-            prefetch_factor=resource_config['prefetch_factor']
-        )
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=None,  # Pre-batched
+        shuffle=True,     # Shuffle batch order
+        num_workers=resource_config['num_workers'],
+        pin_memory=resource_config['pin_memory'],
+        prefetch_factor=resource_config['prefetch_factor']
+    )
 
     val_loader = DataLoader(
         val_ds,

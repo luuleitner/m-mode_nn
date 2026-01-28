@@ -5,7 +5,7 @@ Reads from RAW data (base_data_path/raw/) to verify label generation logic.
 
 Compares label generation between:
 1. preprocessing/label_logic/visualize.py (uses label_config.yaml)
-2. visualization/data_visualization.py (uses label_config.yaml via processor.py)
+2. visualization/data_visualization_raw-processed.py (uses label_config.yaml via processor.py)
 
 Both should produce IDENTICAL labels since they use the same config.
 
@@ -83,7 +83,7 @@ def create_labels_visualize_style(joystick_data, label_config):
 
 def create_labels_processor_style(joystick_data, label_config):
     """
-    Create labels the way data_visualization.py / processor.py does it.
+    Create labels the way data_visualization_raw-processed.py / processor.py does it.
     Now uses the same label_config.yaml as visualize.py.
     """
     label_axis = label_config.get('axis', 'x')
@@ -208,7 +208,7 @@ def main():
     print(f"  Threshold: {result_visualize['threshold_percent']}%")
     print(f"  Labels shape: {result_visualize['labels'].shape}")
 
-    print(f"\ndata_visualization.py style:")
+    print(f"\ndata_visualization_raw-processed.py style:")
     print(f"  Axis: {result_processor['axis_name']} (column {result_processor['joystick_column']})")
     print(f"  Method: {result_processor['method']}")
     print(f"  Threshold: {result_processor['threshold_percent']}%")
@@ -219,7 +219,7 @@ def main():
         result_visualize['labels'],
         result_processor['labels'],
         f"visualize.py ({result_visualize['axis_name']})",
-        f"data_visualization.py ({result_processor['axis_name']})"
+        f"data_visualization_raw-processed.py ({result_processor['axis_name']})"
     )
 
     # Summary

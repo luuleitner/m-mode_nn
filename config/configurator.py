@@ -257,6 +257,13 @@ class ConfigurationManager:
     def get_dataset_parameters(self) -> Dict[str, Any]:
         """Get dataset parameters for function calls"""
         ds = self.ml.dataset
+
+        # Handle oversample_config which may be a nested object
+        oversample_config = getattr(ds, 'oversample_config', None)
+        if oversample_config is not None:
+            # Convert from OmegaConf/namespace to dict
+            oversample_config = self._namespace_to_dict(oversample_config)
+
         return {
             'data_root': ds.data_root,
             'metadata_file': os.path.join(ds.data_root, 'metadata.csv') if ds.data_root else '',
@@ -278,7 +285,27 @@ class ConfigurationManager:
             'global_label_filter': getattr(ds, 'global_label_filter', None),
             'shuffle_experiments': getattr(ds, 'shuffle_experiments', True),
             'shuffle_sequences': getattr(ds, 'shuffle_sequences', True),
+            # Class balancing parameters (only applied to train set)
+            'balance_classes': getattr(ds, 'balance_classes', False),
+            'balance_strategy': getattr(ds, 'balance_strategy', 'oversample'),
+            'oversample_config': oversample_config,
         }
+
+    def _namespace_to_dict(self, obj):
+        """Recursively convert OmegaConf/namespace objects to dictionaries."""
+        if obj is None:
+            return None
+        # Handle OmegaConf DictConfig
+        if hasattr(obj, '_content'):
+            return OmegaConf.to_container(obj, resolve=True)
+        # Handle regular namespace objects
+        if hasattr(obj, '__dict__'):
+            result = {}
+            for key, value in vars(obj).items():
+                if not key.startswith('_'):
+                    result[key] = self._namespace_to_dict(value)
+            return result
+        return obj
 
     # ========================================
     # SETUP METHODS
