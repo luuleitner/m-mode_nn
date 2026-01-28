@@ -143,7 +143,7 @@ class DataProcessor():
             self._file_save_id = f'TokenWin{int(self._config.preprocess.tokenization.window):02}_TokenStr{int(self._config.preprocess.tokenization.stride):02}_SeqWin{int(self._config.preprocess.sequencing.window):02}'
         else:  # flat mode
             soft_suffix = '_soft' if self._soft_labels_enabled else ''
-            self._file_save_id = f'TokenWin{int(self._config.preprocess.tokenization.window):02}_TokenStr{int(self._config.preprocess.tokenization.stride):02}_Flat{soft_suffix}'
+            self._file_save_id = f'Window{int(self._config.preprocess.tokenization.window):02}_Stride{int(self._config.preprocess.tokenization.stride):02}_Labels{soft_suffix}'
 
         # Create unique output folder structure: dataset/params/run_timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
