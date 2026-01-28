@@ -66,22 +66,20 @@ class TokenVisualizer:
         # Get processing parameters
         self.token_window = self.config.preprocess.tokenization.window
         self.token_stride = self.config.preprocess.tokenization.stride
-        self.label_method = getattr(self.config.preprocess.labels, 'method', 'derivative')
-        self.label_threshold = getattr(self.config.preprocess.labels, 'threshold_percent', 5.0)
-        self.label_axis = getattr(self.config.preprocess.labels, 'axis', 'x')
 
-        # Load joystick filter config from label_logic config
-        label_logic_config_path = os.path.join(project_root, 'preprocessing', 'label_logic', 'config.yaml')
-        if os.path.exists(label_logic_config_path):
-            with open(label_logic_config_path, 'r') as f:
-                label_logic_config = yaml.safe_load(f)
-            self.filters_config = label_logic_config.get('filters', {})
-        else:
-            self.filters_config = {}
+        # Load label config from label_logic/label_config.yaml
+        label_config_path = os.path.join(project_root, 'preprocessing', 'label_logic', 'label_config.yaml')
+        with open(label_config_path, 'r') as f:
+            label_config = yaml.safe_load(f)
+
+        self.label_method = label_config.get('method', 'derivative')
+        self.label_threshold = label_config.get('threshold_percent', 5.0)
+        self.label_axis = label_config.get('axis', 'x')
+        self.filters_config = label_config.get('filters', {})
 
         # Check if soft labels
-        soft_cfg = getattr(self.config.preprocess.labels, 'soft_labels', None)
-        self.soft_labels_enabled = getattr(soft_cfg, 'enabled', False) if soft_cfg else False
+        soft_cfg = label_config.get('soft_labels', {})
+        self.soft_labels_enabled = soft_cfg.get('enabled', False)
 
         # Find all H5 files (search only in participant subfolders, not recursive)
         self.h5_files = sorted(glob.glob(os.path.join(processed_data_path, 'P*', '*.h5')))
@@ -275,7 +273,7 @@ class TokenVisualizer:
 
         # Apply filters to position (same as visualize.py)
         if self.filters_config:
-            position = apply_joystick_filters(raw_position.copy(), self.filters_config, 'raw')
+            position = apply_joystick_filters(raw_position.copy(), self.filters_config, 'position')
         else:
             position = raw_position.copy()
 

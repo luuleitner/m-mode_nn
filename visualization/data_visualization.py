@@ -55,11 +55,15 @@ def find_label_regions(labels):
     return regions
 
 
-def add_label_regions(fig, labels, row, col, x_range=None):
-    """Add colored background regions for labeled areas."""
+def add_label_regions(fig, labels, row, col, depth, x_range=None):
+    """Add colored filled rectangles for labeled areas on heatmaps."""
     label_colors = {
-        1: 'rgba(0, 255, 0, 0.15)',   # Green for up
-        2: 'rgba(255, 0, 0, 0.15)'    # Red for down
+        1: 'rgba(0, 255, 0, 0.35)',   # Green for up (label 1)
+        2: 'rgba(255, 0, 0, 0.35)'    # Red for down (label 2)
+    }
+    border_colors = {
+        1: 'rgba(0, 255, 0, 0.8)',
+        2: 'rgba(255, 0, 0, 0.8)'
     }
 
     x_offset = x_range[0] if x_range is not None else 0
@@ -67,10 +71,13 @@ def add_label_regions(fig, labels, row, col, x_range=None):
 
     for label_val in [1, 2]:
         for s, e in regions[label_val]:
-            fig.add_vrect(
-                x0=s + x_offset, x1=e + 1 + x_offset,  # +1 because vrect is exclusive
+            fig.add_shape(
+                type="rect",
+                x0=s + x_offset, x1=e + 1 + x_offset,
+                y0=0, y1=depth,
                 fillcolor=label_colors[label_val],
-                layer="below", line_width=0,
+                line=dict(color=border_colors[label_val], width=1),
+                layer="above",
                 row=row, col=col
             )
 
@@ -93,21 +100,22 @@ def create_visualization(exp_path, data):
 
     n_channels = raw_us.shape[0]
 
-    # Extract joystick positions and trigger
-    x_pos = joystick[1, :]
-    y_pos = joystick[2, :]
-    trigger = joystick[3, :]
+    # Extract joystick channel used for labeling
+    label_axis = config_info['label_axis']
+    if label_axis == 'y':
+        joy_pos = joystick[2, :]  # Y axis
+        joy_axis_name = 'Y'
+    else:
+        joy_pos = joystick[1, :]  # X axis (default)
+        joy_axis_name = 'X'
 
-    # Normalize joystick to fit on M-mode (scale to depth range)
+    # Trigger with gain for visibility
+    trigger_gain = 50
+    trigger = joystick[3, :] * trigger_gain
+
+    # Depths
     raw_depth = raw_us.shape[1]
     proc_depth = processed_us.shape[1]
-
-    def normalize_joystick(pos, depth):
-        """Normalize joystick position to M-mode depth range."""
-        pos_min, pos_max = pos.min(), pos.max()
-        if pos_max - pos_min > 0:
-            return depth * 0.1 + (pos - pos_min) / (pos_max - pos_min) * (depth * 0.3)
-        return np.full_like(pos, depth * 0.2)
 
     # Get decimation factor
     dec_factor = config_info['decimation_factor'] or 1
@@ -118,16 +126,18 @@ def create_visualization(exp_path, data):
         subplot_titles.append(f'US Ch{ch} - RAW [{raw_depth} depth × {raw_us.shape[2]} pulses]')
         subplot_titles.append(f'US Ch{ch} - PROCESSED [{proc_depth} depth × {processed_us.shape[2]} pulses] (depth decimated ÷{dec_factor})')
 
-    # Create figure: n_channels * 2 rows, 1 column
+    # Create figure: n_channels * 2 rows, 1 column, with secondary y-axis for joystick
     fig = make_subplots(
         rows=n_channels * 2, cols=1,
         subplot_titles=subplot_titles,
         vertical_spacing=0.04,
-        row_heights=[1] * (n_channels * 2)
+        row_heights=[1] * (n_channels * 2),
+        specs=[[{"secondary_y": True}] for _ in range(n_channels * 2)]
     )
 
     # Build title
-    exp_name = os.path.basename(os.path.dirname(exp_path)) + "/" + os.path.basename(exp_path)
+    session_name = os.path.basename(os.path.dirname(exp_path))
+    exp_num = os.path.basename(exp_path)
     processing_parts = []
     if config_info['bandpass']: processing_parts.append('BP')
     if config_info['tgc']: processing_parts.append('TGC')
@@ -136,10 +146,6 @@ def create_visualization(exp_path, data):
     if config_info['logcompression']: processing_parts.append('Log')
     if config_info['normalization']: processing_parts.append(f"Norm:{config_info['normalization']}")
     if dec_factor > 1: processing_parts.append(f"Dec:÷{dec_factor}")
-
-    title_text = (
-        f"<b>{exp_name}</b>"
-    )
 
     for ch in range(n_channels):
         row_raw = ch * 2 + 1
@@ -157,55 +163,39 @@ def create_visualization(exp_path, data):
             row=row_raw, col=1
         )
 
-        # Add label regions
-        add_label_regions(fig, labels, row_raw, 1)
+        # Add label regions as filled rectangles
+        add_label_regions(fig, labels, row_raw, 1, depth=raw_depth)
 
-        # Joystick X overlay (scaled to depth)
-        joy_x_scaled = normalize_joystick(x_pos, raw_depth)
+        # Joystick (label axis) on secondary y-axis (actual values, not reversed)
         fig.add_trace(
             go.Scatter(
-                x=np.arange(len(x_pos)),
-                y=joy_x_scaled,
+                x=np.arange(len(joy_pos)),
+                y=joy_pos,
                 mode='lines',
                 line=dict(color='cyan', width=1.5),
-                name='Joystick X',
-                legendgroup='joy_x',
+                name=f'Joystick {joy_axis_name}',
+                legendgroup='joy',
                 showlegend=(ch == 0)
             ),
-            row=row_raw, col=1
+            row=row_raw, col=1, secondary_y=True
         )
 
-        # Joystick Y overlay
-        joy_y_scaled = normalize_joystick(y_pos, raw_depth)
-        fig.add_trace(
-            go.Scatter(
-                x=np.arange(len(y_pos)),
-                y=joy_y_scaled,
-                mode='lines',
-                line=dict(color='yellow', width=1.5),
-                name='Joystick Y',
-                legendgroup='joy_y',
-                showlegend=(ch == 0)
-            ),
-            row=row_raw, col=1
-        )
-
-        # Trigger overlay (scaled to bottom portion of depth)
-        trig_scaled = normalize_joystick(trigger, raw_depth) + raw_depth * 0.4
+        # Trigger on secondary y-axis (with gain)
         fig.add_trace(
             go.Scatter(
                 x=np.arange(len(trigger)),
-                y=trig_scaled,
+                y=trigger,
                 mode='lines',
                 line=dict(color='magenta', width=1.5),
-                name='Trigger',
+                name=f'Trigger (×{trigger_gain})',
                 legendgroup='trigger',
                 showlegend=(ch == 0)
             ),
-            row=row_raw, col=1
+            row=row_raw, col=1, secondary_y=True
         )
 
-        fig.update_yaxes(autorange='reversed', title_text='Depth', row=row_raw, col=1)
+        fig.update_yaxes(autorange='reversed', title_text='Depth', row=row_raw, col=1, secondary_y=False)
+        fig.update_yaxes(title_text='Joystick', row=row_raw, col=1, secondary_y=True)
         fig.update_xaxes(title_text='Pulses', row=row_raw, col=1)
 
         # === PROCESSED ROW ===
@@ -223,80 +213,59 @@ def create_visualization(exp_path, data):
 
         # NOTE: Decimation is on DEPTH axis, not PULSES axis
         # So joystick and labels have the same pulse count as processed US
-        add_label_regions(fig, labels, row_proc, 1)
+        add_label_regions(fig, labels, row_proc, 1, depth=proc_depth)
 
-        # Joystick overlays (same pulse count, scaled to processed depth)
-        joy_x_proc = normalize_joystick(x_pos, proc_depth)
-        joy_y_proc = normalize_joystick(y_pos, proc_depth)
-
+        # Joystick (label axis) on secondary y-axis (actual values)
         fig.add_trace(
             go.Scatter(
-                x=np.arange(len(x_pos)),
-                y=joy_x_proc,
+                x=np.arange(len(joy_pos)),
+                y=joy_pos,
                 mode='lines',
                 line=dict(color='cyan', width=1.5),
-                name='Joystick X (proc)',
-                legendgroup='joy_x',
+                name=f'Joystick {joy_axis_name} (proc)',
+                legendgroup='joy',
                 showlegend=False
             ),
-            row=row_proc, col=1
+            row=row_proc, col=1, secondary_y=True
         )
 
-        fig.add_trace(
-            go.Scatter(
-                x=np.arange(len(y_pos)),
-                y=joy_y_proc,
-                mode='lines',
-                line=dict(color='yellow', width=1.5),
-                name='Joystick Y (proc)',
-                legendgroup='joy_y',
-                showlegend=False
-            ),
-            row=row_proc, col=1
-        )
-
-        # Trigger overlay (scaled to bottom portion)
-        trig_proc = normalize_joystick(trigger, proc_depth) + proc_depth * 0.4
+        # Trigger on secondary y-axis (with gain)
         fig.add_trace(
             go.Scatter(
                 x=np.arange(len(trigger)),
-                y=trig_proc,
+                y=trigger,
                 mode='lines',
                 line=dict(color='magenta', width=1.5),
-                name='Trigger (proc)',
+                name=f'Trigger (proc)',
                 legendgroup='trigger',
                 showlegend=False
             ),
-            row=row_proc, col=1
+            row=row_proc, col=1, secondary_y=True
         )
 
-        fig.update_yaxes(autorange='reversed', title_text=f'Depth (÷{dec_factor})' if dec_factor > 1 else 'Depth', row=row_proc, col=1)
+        fig.update_yaxes(autorange='reversed', title_text=f'Depth (÷{dec_factor})' if dec_factor > 1 else 'Depth', row=row_proc, col=1, secondary_y=False)
+        fig.update_yaxes(title_text='Joystick', row=row_proc, col=1, secondary_y=True)
         fig.update_xaxes(title_text='Pulses', row=row_proc, col=1)
 
     # Layout
     fig.update_layout(
-        title=dict(
-            text=title_text,
-            font=dict(size=16),
-            x=0.5,
-            xanchor='center'
-        ),
         height=300 * n_channels * 2,
         width=1400,
         showlegend=True,
         legend=dict(
             orientation='h',
-            yanchor='top',
-            y=1.12,
-            xanchor='center',
-            x=0.5,
+            yanchor='bottom',
+            y=1.08,
+            xanchor='left',
+            x=0.0,
             bgcolor='rgba(255,255,255,0.8)'
         ),
-        margin=dict(t=150, b=50)
+        margin=dict(t=140, b=50)
     )
 
-    # Add info annotation box at the top
+    # Add info annotation box at the top (includes experiment name)
     info_lines = [
+        f"<b>Session:</b> {session_name}  |  <b>Exp:</b> {exp_num}",
         f"<b>Processing:</b> {' → '.join(processing_parts)}",
         f"<b>Labels:</b> {config_info['label_method']} (axis={config_info['label_axis']}, thresh={config_info['label_threshold']}%)",
         f"<b>Shapes:</b> Raw {raw_us.shape} → Proc {processed_us.shape} | Joy {joystick.shape} | Labels {labels.shape}"
@@ -304,7 +273,7 @@ def create_visualization(exp_path, data):
     fig.add_annotation(
         text="<br>".join(info_lines),
         xref="paper", yref="paper",
-        x=0.5, y=1.08,
+        x=0.5, y=1.02,
         showarrow=False,
         font=dict(size=11),
         align="center",
