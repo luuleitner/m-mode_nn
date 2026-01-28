@@ -16,7 +16,7 @@ import csv
 from pathlib import Path
 
 
-def find_experiments(raw_data_path: str) -> list:
+def find_experiments(raw_data_path):
     """
     Find all experiment folders in the raw data directory.
 
@@ -45,7 +45,7 @@ def find_experiments(raw_data_path: str) -> list:
     return experiments
 
 
-def generate_csv(experiments: list, output_path: str, include_path: bool = False):
+def generate_csv(experiments, output_path, include_path=False):
     """
     Generate a CSV selection file.
 

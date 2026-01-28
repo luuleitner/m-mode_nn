@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2025_wristus_wiicontroller_leitner"
     process_base_data_path: &process_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed"
-    train_base_data_path: &train_base_data_path null  # Set after preprocessing completes
+    train_base_data_path: &train_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_CNN/Window18_Stride02_Labels_soft/run_20260128_101812"  # Set after preprocessing completes
 
 # ========================================
 # ML PIPELINE CONFIGURATION
@@ -27,7 +27,7 @@ global_setting:
 ml:
   # Data Loading
   loading:
-    load_data_pickle: True
+    load_data_pickle: false
 
   # Dataset Configuration
   dataset:
@@ -137,7 +137,7 @@ preprocess:
       lowcut: 8e6                     # 8 MHz
       highcut: 12e6                   # 12 MHz
       fs: 50e6                        # 50 MSPS
-      order: 5
+      order: 10
     tgc:
       apply: true
       freq: 50e6                      # 50 MSPS
@@ -155,8 +155,8 @@ preprocess:
         mode: "constant"
         amount: 30
     logcompression:
-      apply: false
-      db: 20
+      apply: true
+      db: 45
     normalization:
       apply: true
       method: "peakZ"

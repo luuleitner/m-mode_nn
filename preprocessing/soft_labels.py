@@ -9,7 +9,7 @@ class SoftLabelGenerator:
     Soft labels: [num_tokens, num_classes] float32 probability distributions
     """
 
-    def __init__(self, num_classes: int, weighting: str = "gaussian", gaussian_sigma_ratio: float = 0.25):
+    def __init__(self, num_classes, weighting="gaussian", gaussian_sigma_ratio=0.25):
         """
         Args:
             num_classes: Number of label classes (e.g., 3 for noise/up/down)
@@ -23,7 +23,7 @@ class SoftLabelGenerator:
         if weighting not in ("uniform", "gaussian"):
             raise ValueError(f"weighting must be 'uniform' or 'gaussian', got '{weighting}'")
 
-    def create_soft_labels(self, hard_labels: np.ndarray, window_size: int, stride: int) -> np.ndarray:
+    def create_soft_labels(self, hard_labels, window_size, stride):
         """
         Convert per-sample hard labels to per-token soft label distributions.
 
@@ -54,7 +54,7 @@ class SoftLabelGenerator:
 
         return soft_labels
 
-    def _get_weights(self, window_size: int) -> np.ndarray:
+    def _get_weights(self, window_size):
         """
         Generate weights for aggregating labels within a window.
 
@@ -74,8 +74,7 @@ class SoftLabelGenerator:
             return weights / weights.sum()
 
 
-def window_hard_labels(hard_labels: np.ndarray, window_size: int, stride: int,
-                       method: str = "majority") -> np.ndarray:
+def window_hard_labels(hard_labels, window_size, stride, method="majority"):
     """
     Convert per-sample hard labels to per-token hard labels using windowing.
 

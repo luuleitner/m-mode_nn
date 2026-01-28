@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from config.configurator import load_config, setup_environment
-from src.models.cnn_ae import CNNAutoencoder
+from src.models.archive.cnn_ae import CNNAutoencoder
 from src.models.transformer_ae import TransformerAutoencoder, CNNTransformerAutoencoder
 from src.training.trainers.trainer_ae import TrainerAE
 from src.data.datasets import create_filtered_split_datasets

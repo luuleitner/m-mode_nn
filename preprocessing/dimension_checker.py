@@ -11,7 +11,6 @@ import numpy as np
 from pathlib import Path
 import h5py
 import pandas as pd
-from typing import Dict, Tuple, Optional, List
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("DIMENSION_CHECKER")
@@ -20,7 +19,7 @@ logger = logconf.get_logger("DIMENSION_CHECKER")
 class DimensionChecker:
     """Checks and validates data dimensions throughout the processing pipeline"""
     
-    def __init__(self, config_path: str = 'config/config.yaml'):
+    def __init__(self, config_path='config/config.yaml'):
         """Initialize with configuration file"""
         self.config_path = config_path
         self.load_config()
@@ -31,7 +30,7 @@ class DimensionChecker:
         with open(self.config_path, 'r') as f:
             self.config = yaml.safe_load(f)
             
-    def calculate_expected_dimensions(self) -> Dict:
+    def calculate_expected_dimensions(self):
         """Calculate expected dimensions based on configuration"""
         
         # Extract parameters from config
@@ -142,7 +141,7 @@ class DimensionChecker:
         
         return dimensions
     
-    def check_processed_data(self, data_path: str) -> Dict:
+    def check_processed_data(self, data_path):
         """Check actual dimensions from processed data files"""
         
         actual_dims = {}
@@ -198,7 +197,7 @@ class DimensionChecker:
                 
         return actual_dims
     
-    def generate_guide_content(self, expected_dims: Dict, actual_dims: Optional[Dict] = None) -> str:
+    def generate_guide_content(self, expected_dims, actual_dims=None):
         """Generate markdown content for the dimensions guide"""
         
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -380,7 +379,7 @@ label_tensor = torch.from_numpy(labels).long()
         
         return content
     
-    def update_guide(self, processed_data_path: Optional[str] = None) -> bool:
+    def update_guide(self, processed_data_path=None):
         """Update the dimensions guide with current configuration"""
         
         try:
@@ -409,7 +408,7 @@ label_tensor = torch.from_numpy(labels).long()
             logger.error(f"Failed to update guide: {e}")
             return False
     
-    def validate_dimensions(self, processed_data_path: str) -> List[str]:
+    def validate_dimensions(self, processed_data_path):
         """Validate that actual dimensions match expected"""
         
         issues = []
@@ -437,7 +436,7 @@ label_tensor = torch.from_numpy(labels).long()
         
         return issues
     
-    def print_summary(self, processed_data_path: Optional[str] = None):
+    def print_summary(self, processed_data_path=None):
         """Print a summary of expected and actual dimensions"""
         
         print("=" * 60)

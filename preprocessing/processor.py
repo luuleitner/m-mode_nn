@@ -29,11 +29,12 @@ logger = logconf.get_logger("MAIN")
 
 
 class DataProcessor():
-    def __init__(self, config_file='config.yaml'):
+    def __init__(self, config_file='config.yaml', auto_run=True):
         # Setup Config Parameters
         self._config_path = config_file  # Store for dimension checker
         self._config = load_config(config_file)
         self._np_seed_generator = setup_environment(self._config)
+        self._auto_run = auto_run
 
         # Set Operation Mode
         self._operation_mode = self._config.global_setting.run.mode
@@ -145,20 +146,23 @@ class DataProcessor():
             soft_suffix = '_soft' if self._soft_labels_enabled else ''
             self._file_save_id = f'Window{int(self._config.preprocess.tokenization.window):02}_Stride{int(self._config.preprocess.tokenization.stride):02}_Labels{soft_suffix}'
 
+        # Other Flags
+        self._save_flag = self._config.preprocess.tokenization.tokens2file
+        self._set_token_startendID_flag = self._config.preprocess.tokenization.startendID
+
+        # Only run full pipeline if auto_run=True
+        if not self._auto_run:
+            return
+
         # Create unique output folder structure: dataset/params/run_timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         dataset_folder = os.path.join(self._data_path_processed, self._save_path_id)
         params_folder = os.path.join(dataset_folder, self._file_save_id)
         self._output_folder = os.path.join(params_folder, f"run_{timestamp}")
-        
+
         # Create all directories
         os.makedirs(self._output_folder, exist_ok=True)
         logger.info(f"Created unique output folder: {self._output_folder}")
-
-        # Other Flags
-        self._save_flag = self._config.preprocess.tokenization.tokens2file
-        self._set_token_startendID_flag = self._config.preprocess.tokenization.startendID
-
 
         # ---------------------------------------------
         # --------------PREPROCESS---------------------
@@ -173,7 +177,7 @@ class DataProcessor():
             raise ValueError(f"Unknown strategy: {self._config.preprocess.data.strategy}. Use 'all' or 'selection_file'")
         # ---------------------------------------------
         # (2) PREPROCESS: Process each experiment found in the file structure
-        
+
         # Log start of processing and save replication info
         self._log_processing_stage('start_processing', {
             'total_experiments': len(self._fstructure),
@@ -189,7 +193,7 @@ class DataProcessor():
             }
         })
         self._save_replication_info()
-        
+
         self._process_experiments()
 
         # ----------- >>>>> STOP
@@ -846,6 +850,133 @@ class DataProcessor():
         path_parts = normalized_path.split(os.sep, 1)
         new_path = path_parts[1] if len(path_parts) > 1 else ""
         return new_path
+
+    # =========================================================================
+    # PUBLIC API FOR SINGLE EXPERIMENT PROCESSING (used by visualization)
+    # =========================================================================
+
+    def get_experiment_paths(self):
+        """Load and return experiment paths based on config strategy."""
+        if self._config.preprocess.data.strategy == "all":
+            self._load_fstructure()
+        elif self._config.preprocess.data.strategy == "selection_file":
+            selection_path = self._config.preprocess.data.selection_file
+            self._load_fstructure_from_selection(selection_path)
+        return self._fstructure
+
+    def process_single_experiment(self, exp_path):
+        """
+        Process a single experiment and return raw + processed data with labels.
+
+        Args:
+            exp_path: Path to experiment folder
+
+        Returns:
+            dict with keys:
+                'raw_us': Raw ultrasound data [C, samples, pulses]
+                'processed_us': Processed ultrasound data [C, samples, pulses]
+                'joystick': Joystick data [4, pulses] (ch0=unused, ch1=X, ch2=Y, ch3=trigger)
+                'labels': Per-sample labels array
+                'markers': Dict with edge/peak indices for visualization
+                'config_info': Dict with processing parameters used
+        """
+        # Load raw data
+        files = sorted(glob.glob(os.path.join(exp_path, "_US_ch*")))
+        if not files:
+            raise FileNotFoundError(f"No US channel files found in {exp_path}")
+
+        raw_us = np.stack([np.load(f).T for f in files], axis=0)
+
+        joystick_files = glob.glob(os.path.join(exp_path, "_joystick*"))
+        if not joystick_files:
+            raise FileNotFoundError(f"No joystick file found in {exp_path}")
+        joystick = np.load(joystick_files[0]).T
+
+        # Process ultrasound
+        processed_us = self._signal_processing(raw_us.copy())
+
+        # Create labels with markers
+        labels, markers = self._create_visualization_labels(joystick)
+
+        # Config info for plot titles
+        config_info = {
+            'bandpass': self._bandpass_flag,
+            'tgc': self._tgc_flag,
+            'clip': self._clip_flag,
+            'envelope': self._envelope_flag,
+            'logcompression': self._logcompression_flag,
+            'normalization': self._normalization_technique if self._normalization_flag else None,
+            'decimation_factor': self._decimation_factor if self._decimation_flag else None,
+            'label_method': self._label_method,
+            'label_axis': self._label_axis,
+            'label_threshold': self._label_threshold,
+        }
+
+        return {
+            'raw_us': raw_us,
+            'processed_us': processed_us,
+            'joystick': joystick,
+            'labels': labels,
+            'markers': markers,
+            'config_info': config_info
+        }
+
+    def _create_visualization_labels(self, joystick_data):
+        """
+        Create per-sample labels with visualization markers.
+
+        Returns:
+            labels: Per-sample label array (0=noise, 1=up, 2=down)
+            markers: Dict with indices for visualization
+        """
+        # Handle joystick shape
+        if joystick_data.ndim == 3:
+            joystick_data = joystick_data[0]
+
+        # Extract position based on config axis
+        x_position = joystick_data[1, :]
+        y_position = joystick_data[2, :]
+
+        if self._label_axis == 'x':
+            position_data = x_position
+        elif self._label_axis == 'y':
+            position_data = y_position
+        else:
+            position_data = x_position
+
+        # Compute derivative
+        derivative = np.gradient(position_data)
+
+        # Create labels based on method - preserve markers for visualization
+        if self._label_method == 'derivative':
+            labels, threshold = create_derivative_labels(derivative, self._label_threshold)
+            markers = {
+                'threshold': threshold,
+                'method': 'derivative'
+            }
+        elif self._label_method == 'edge_to_peak':
+            labels, threshold, markers = create_edge_to_peak_labels(
+                position_data, derivative, self._label_threshold
+            )
+            markers['threshold'] = threshold
+            markers['method'] = 'edge_to_peak'
+        elif self._label_method == 'edge_to_derivative':
+            labels, pos_threshold, deriv_threshold, markers = create_edge_to_derivative_labels(
+                position_data, derivative, self._label_threshold
+            )
+            markers['pos_threshold'] = pos_threshold
+            markers['deriv_threshold'] = deriv_threshold
+            markers['method'] = 'edge_to_derivative'
+        else:
+            raise ValueError(f"Unknown label method: {self._label_method}")
+
+        # Add position and derivative to markers for plotting
+        markers['position'] = position_data
+        markers['derivative'] = derivative
+        markers['x_position'] = x_position
+        markers['y_position'] = y_position
+
+        return labels, markers
 
 
 if __name__ == '__main__':

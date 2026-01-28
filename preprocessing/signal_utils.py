@@ -7,7 +7,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 # ============== Filter Functions ==============
 
-def butter_bandpass_filter(data, ax, lowcut, highcut, fs, order) -> np.ndarray:
+def butter_bandpass_filter(data, ax, lowcut, highcut, fs, order):
     """Apply butterworth bandpass filter."""
     sos = butter(order, [lowcut,highcut], fs=fs, btype='bandpass', output="sos")
     return sosfiltfilt(sos, data, axis=ax)
