@@ -1,0 +1,51 @@
+# ==================================================
+# LABEL EXTRACTION CONFIGURATION
+# ==================================================
+# Single source of truth for all labeling parameters.
+# Used by: processor.py, data_visualization.py, visualize.py
+
+# --------------------------------------------------
+# LABELING METHOD & PARAMETERS
+# --------------------------------------------------
+method: "edge_to_derivative"    # derivative | edge_to_peak | edge_to_derivative
+threshold_percent: 10.0         # percentage of max value for threshold detection
+axis: "x"                       # x | y (which joystick axis to use for labels)
+
+# --------------------------------------------------
+# SOFT LABELS (for training)
+# --------------------------------------------------
+soft_labels:
+  enabled: true
+  num_classes: 3                # 0=noise, 1=up/right, 2=down/left
+  weighting: "gaussian"         # uniform | gaussian
+  gaussian_sigma_ratio: 0.25    # sigma = window_size * ratio
+
+# --------------------------------------------------
+# JOYSTICK SIGNAL FILTERS
+# --------------------------------------------------
+# Applied before label extraction to reduce noise and
+# improve movement detection accuracy.
+
+filters:
+  position:
+    lowpass:
+      enabled: true
+      cutoff: 5             # Hz
+      fs: 175               # sampling frequency Hz
+      order: 2
+      ax: 0
+    savitzky_golay:
+      enabled: true
+      window_length: 51     # must be odd
+      polyorder: 2
+
+  derivative:
+    moving_average:
+      enabled: true
+      window_size: 20
+
+# --------------------------------------------------
+# VISUALIZATION (for label_logic/visualize.py only)
+# --------------------------------------------------
+display:
+  show_raw_trace: true

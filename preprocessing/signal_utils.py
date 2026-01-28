@@ -36,7 +36,12 @@ def savitzky_golay(data, window_length, polyorder):
 
 def apply_joystick_filters(data, filter_config, signal_type):
     """
-    Apply all enabled filters for the given signal type (raw or derivative).
+    Apply all enabled filters for the given signal type.
+
+    Args:
+        data: Input signal array
+        filter_config: Dict with 'position' and 'derivative' filter configs
+        signal_type: 'position' or 'derivative'
     """
     signal_config = filter_config.get(signal_type, {})
 

@@ -12,37 +12,42 @@ from preprocessing.label_logic.labeling import create_derivative_labels, create_
 
 # Paths - relative to this file's location
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_dir = os.path.dirname(script_dir)
-config_path = os.path.join(script_dir, "config.yaml")
+project_dir = os.path.dirname(os.path.dirname(script_dir))  # Go up to project root
+label_config_path = os.path.join(script_dir, "label_config.yaml")
+main_config_path = os.path.join(project_dir, "config", "config.yaml")
 
-# Load config
-with open(config_path, 'r') as f:
-    config = yaml.safe_load(f)
+# Load label config
+with open(label_config_path, 'r') as f:
+    label_config = yaml.safe_load(f)
 
-# Paths from config
-paths_config = config.get('paths', {})
-base_path = os.path.join(project_dir, paths_config.get('raw_data', 'Data/raw'))
+# Load main config for paths
+with open(main_config_path, 'r') as f:
+    main_config = yaml.safe_load(f)
 
-# File names from config
-files_config = config.get('files', {})
-joystick_file = files_config.get('joystick', '_joystick.npy')
+# Paths from main config
+base_data_path = main_config.get('global_setting', {}).get('paths', {}).get('base_data_path', '')
+base_path = os.path.join(base_data_path, 'raw')
 
-joystick_column = config.get('joystick_column', 1)
+# File names
+joystick_file = '_joystick.npy'
+
+# Joystick axis from label config
+label_axis = label_config.get('axis', 'x')
+joystick_column = 1 if label_axis == 'x' else 2  # 1=X, 2=Y
 
 # Display settings
-display_config = config.get('display', {})
+display_config = label_config.get('display', {})
 show_raw_trace = display_config.get('show_raw_trace', False)
 
-# Filter settings
-filters_config = config.get('filters', {})
+# Filter settings (now under 'filters' with 'position' and 'derivative' keys)
+filters_config = label_config.get('filters', {})
 
 # Labels settings
-labels_config = config.get('labels', {})
-label_method = labels_config.get('method', 'derivative')  # "derivative" or "edge_to_peak"
-threshold_percent = labels_config.get('threshold_percent', 5.0)
+label_method = label_config.get('method', 'derivative')
+threshold_percent = label_config.get('threshold_percent', 5.0)
 
-# Include settings (sessions to process with their exclusion rules)
-include_config = config.get('include', {})
+# No include/exclude config - use main config's selection_file strategy instead
+include_config = {}
 
 
 def get_sessions():
@@ -261,8 +266,8 @@ def plot_joystick_stacked(session_path, session_name):
 
             raw_data = joystick_data[:, col]
 
-            # Apply filters to data
-            data = apply_joystick_filters(raw_data.copy(), filters_config, 'raw')
+            # Apply filters to position data
+            data = apply_joystick_filters(raw_data.copy(), filters_config, 'position')
 
             derivative = np.gradient(data)
 

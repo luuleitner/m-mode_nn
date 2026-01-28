@@ -104,22 +104,24 @@ class DataProcessor():
         # Output mode: transformer (sequenced) or flat (CNN-ready)
         self._output_mode = getattr(self._config.preprocess.output, 'mode', 'transformer')
 
-        # Label configuration
-        self._label_method = getattr(self._config.preprocess.labels, 'method', 'derivative')
-        self._label_threshold = getattr(self._config.preprocess.labels, 'threshold_percent', 5.0)
-        self._label_axis = getattr(self._config.preprocess.labels, 'axis', 'x')
+        # Label configuration - load from separate label_config.yaml
+        self._label_config = self._load_label_config()
+        self._label_method = self._label_config.get('method', 'derivative')
+        self._label_threshold = self._label_config.get('threshold_percent', 5.0)
+        self._label_axis = self._label_config.get('axis', 'x')
+        self._joystick_filters = self._label_config.get('filters', {})
 
         # Soft labels configuration
-        soft_labels_config = getattr(self._config.preprocess.labels, 'soft_labels', None)
-        self._soft_labels_enabled = getattr(soft_labels_config, 'enabled', False) if soft_labels_config else False
+        soft_labels_config = self._label_config.get('soft_labels', {})
+        self._soft_labels_enabled = soft_labels_config.get('enabled', False)
 
         if self._soft_labels_enabled:
             self._soft_label_gen = SoftLabelGenerator(
-                num_classes=getattr(soft_labels_config, 'num_classes', 3),
-                weighting=getattr(soft_labels_config, 'weighting', 'gaussian'),
-                gaussian_sigma_ratio=getattr(soft_labels_config, 'gaussian_sigma_ratio', 0.25)
+                num_classes=soft_labels_config.get('num_classes', 3),
+                weighting=soft_labels_config.get('weighting', 'gaussian'),
+                gaussian_sigma_ratio=soft_labels_config.get('gaussian_sigma_ratio', 0.25)
             )
-            self._num_label_classes = getattr(soft_labels_config, 'num_classes', 3)
+            self._num_label_classes = soft_labels_config.get('num_classes', 3)
         else:
             self._soft_label_gen = None
             self._num_label_classes = 1  # Hard labels
@@ -232,6 +234,15 @@ class DataProcessor():
         local_log.append(log_entry)
         with open(local_log_path, 'w') as f:
             yaml.dump(local_log, f, default_flow_style=False)
+
+    def _load_label_config(self):
+        """Load label configuration from label_logic/label_config.yaml"""
+        label_config_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'label_logic', 'label_config.yaml'
+        )
+        with open(label_config_path, 'r') as f:
+            return yaml.safe_load(f)
 
     def _save_replication_info(self):
         """Save all info needed to replicate this processing run"""
@@ -707,14 +718,24 @@ class DataProcessor():
 
         # Select axis based on config
         if self._label_axis == 'x':
-            position_data = x_position
+            raw_position = x_position
         elif self._label_axis == 'y':
-            position_data = y_position
+            raw_position = y_position
         else:  # combined - use X for now, can extend later
-            position_data = x_position
+            raw_position = x_position
 
-        # Compute derivative for labeling methods that need it
+        # Apply filters to position data (same as label_logic/visualize.py)
+        position_data = apply_joystick_filters(
+            raw_position.copy(), self._joystick_filters, 'position'
+        )
+
+        # Compute derivative
         derivative = np.gradient(position_data)
+
+        # Apply filters to derivative
+        derivative = apply_joystick_filters(
+            derivative, self._joystick_filters, 'derivative'
+        )
 
         # Create per-sample hard labels based on configured method
         if self._label_method == 'derivative':
@@ -938,14 +959,24 @@ class DataProcessor():
         y_position = joystick_data[2, :]
 
         if self._label_axis == 'x':
-            position_data = x_position
+            raw_position = x_position
         elif self._label_axis == 'y':
-            position_data = y_position
+            raw_position = y_position
         else:
-            position_data = x_position
+            raw_position = x_position
+
+        # Apply filters to position data (same as label_logic/visualize.py)
+        position_data = apply_joystick_filters(
+            raw_position.copy(), self._joystick_filters, 'position'
+        )
 
         # Compute derivative
         derivative = np.gradient(position_data)
+
+        # Apply filters to derivative
+        derivative = apply_joystick_filters(
+            derivative, self._joystick_filters, 'derivative'
+        )
 
         # Create labels based on method - preserve markers for visualization
         if self._label_method == 'derivative':

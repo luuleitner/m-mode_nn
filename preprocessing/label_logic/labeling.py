@@ -6,66 +6,43 @@ from preprocessing.signal_utils import apply_joystick_filters
 
 # Paths - relative to this file's location
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_dir = os.path.dirname(script_dir)
-config_path = os.path.join(script_dir, "config.yaml")
+project_dir = os.path.dirname(os.path.dirname(script_dir))  # Go up to project root
+label_config_path = os.path.join(script_dir, "label_config.yaml")
+main_config_path = os.path.join(project_dir, "config", "config.yaml")
 
-# Load config
-with open(config_path, 'r') as f:
-    config = yaml.safe_load(f)
+# Load label config
+with open(label_config_path, 'r') as f:
+    label_config = yaml.safe_load(f)
 
-# Paths from config
-paths_config = config.get('paths', {})
-base_path = os.path.join(project_dir, paths_config.get('raw_data', 'Data/raw'))
-output_base_path = os.path.join(project_dir, paths_config.get('processed_data', 'Data/processed'))
+# Load main config for paths
+with open(main_config_path, 'r') as f:
+    main_config = yaml.safe_load(f)
 
-# File names from config
-files_config = config.get('files', {})
-joystick_file = files_config.get('joystick', '_joystick.npy')
-labels_file = files_config.get('labels', '_labels.npy')
+# Paths from main config
+base_data_path = main_config.get('global_setting', {}).get('paths', {}).get('base_data_path', '')
+base_path = os.path.join(base_data_path, 'raw')
+output_base_path = os.path.join(base_data_path, 'processed')
 
-joystick_column = config.get('joystick_column', 1)
-filters_config = config.get('filters', {})
-labels_config = config.get('labels', {})
-threshold_percent = labels_config.get('threshold_percent', 5.0)
+# File names
+joystick_file = '_joystick.npy'
+labels_file = '_labels.npy'
+
+# Label settings from label_config
+label_axis = label_config.get('axis', 'x')
+joystick_column = 1 if label_axis == 'x' else 2
+filters_config = label_config.get('filters', {})
+threshold_percent = label_config.get('threshold_percent', 5.0)
+label_method = label_config.get('method', 'derivative')
 
 
 def get_excluded_experiments(session_name, max_exp=20):
     """
-    Returns a set of experiment numbers to exclude based on config.
+    Returns a set of experiment numbers to exclude.
+
+    Note: Exclusion logic has been moved to main config's selection_file strategy.
+    This function now returns empty set - use config/preprocessing_selection.csv instead.
     """
-    if 'exclude' not in config or session_name not in config['exclude']:
-        return set()
-
-    session_config = config['exclude'][session_name]
-    excluded = set()
-
-    if 'pattern' in session_config:
-        pattern = session_config['pattern']
-        double_exclude = session_config.get('double_exclude', [])
-
-        if pattern == 'odd':
-            exp = 1
-            while exp <= max_exp:
-                excluded.add(exp)
-                if exp in double_exclude:
-                    excluded.add(exp + 1)
-                    exp += 3
-                else:
-                    exp += 2
-        elif pattern == 'even':
-            exp = 0
-            while exp <= max_exp:
-                excluded.add(exp)
-                if exp in double_exclude:
-                    excluded.add(exp + 1)
-                    exp += 3
-                else:
-                    exp += 2
-
-    if 'additional' in session_config:
-        excluded.update(session_config['additional'])
-
-    return excluded
+    return set()
 
 
 
@@ -337,8 +314,8 @@ def process_session(session_name):
         joystick_data = np.load(file, allow_pickle=True)
         raw_data = joystick_data[:, joystick_column]
 
-        # Apply filters to raw data
-        data = apply_joystick_filters(raw_data.copy(), filters_config, 'raw')
+        # Apply filters to position data
+        data = apply_joystick_filters(raw_data.copy(), filters_config, 'position')
 
         # Compute derivative
         derivative = np.gradient(data)

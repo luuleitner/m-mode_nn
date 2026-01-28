@@ -178,16 +178,8 @@ preprocess:
   output:
     mode: "flat"             # transformer | flat (flat for CNN, no sequencing)
 
-  labels:
-    method: "edge_to_derivative"            # derivative | edge_to_peak | edge_to_derivative
-    threshold_percent: 10.0
-    axis: "x"                       # x | y | combined (which joystick axis to use)
-
-    soft_labels:
-      enabled: true
-      num_classes: 3                # 0=noise, 1=up/right, 2=down/left
-      weighting: "gaussian"         # uniform | gaussian
-      gaussian_sigma_ratio: 0.25    # sigma = window_size * ratio
+  # Label configuration is in a separate file for clarity
+  label_config: "preprocessing/label_logic/label_config.yaml"
 
 # ========================================
 # LOGGING CONFIGURATION
