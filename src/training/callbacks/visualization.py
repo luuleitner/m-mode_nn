@@ -11,18 +11,38 @@ from .base_callback import Callback
 import logging
 logger = logging.getLogger(__name__)
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 
 class VisualizationCallback(Callback):
     """Generates visualizations during training."""
 
-    def __init__(self, save_dir, plot_every_n_epochs=10, test_loader=None):
+    def __init__(self, save_dir, plot_every_n_epochs=10, test_loader=None, log_to_wandb=True):
         self.save_dir = save_dir
         self.plot_every_n_epochs = plot_every_n_epochs
         self.test_loader = test_loader
+        self.log_to_wandb = log_to_wandb and WANDB_AVAILABLE
         os.makedirs(save_dir, exist_ok=True)
 
     def set_test_loader(self, test_loader):
         self.test_loader = test_loader
+
+    def _log_to_wandb(self, name, image_path, epoch=None):
+        """Log image to wandb if available and enabled."""
+        if not self.log_to_wandb or not WANDB_AVAILABLE:
+            return
+        try:
+            if wandb.run is not None and os.path.exists(image_path):
+                log_data = {name: wandb.Image(image_path)}
+                if epoch is not None:
+                    log_data['epoch'] = epoch
+                wandb.log(log_data)
+        except Exception as e:
+            logger.warning(f"Failed to log image to WandB: {e}")
 
     def on_epoch_end(self, epoch, logs=None):
         if (epoch + 1) % self.plot_every_n_epochs == 0:
@@ -88,6 +108,7 @@ class VisualizationCallback(Callback):
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"Training curves saved: {save_path}")
+        self._log_to_wandb('training/curves', save_path, epoch)
 
     def _plot_reconstructions(self, epoch, prefix=''):
         """Plot reconstruction comparisons using adapter."""
@@ -97,14 +118,17 @@ class VisualizationCallback(Callback):
         self.trainer.model.eval()
         with torch.no_grad():
             batch = next(iter(self.test_loader))
-            data = self.trainer.adapter.prepare_batch(batch, self.trainer.device)
+            data, _ = self.trainer.adapter.prepare_batch(batch, self.trainer.device)
             reconstruction, _ = self.trainer.model(data)
 
         save_path = os.path.join(self.save_dir, f'{prefix}reconstructions_epoch_{epoch+1}.png')
         self.trainer.adapter.visualize_reconstruction(data, reconstruction, save_path)
+        self._log_to_wandb('reconstructions/heatmaps', save_path, epoch)
 
         sample_path = os.path.join(self.save_dir, f'{prefix}samples_epoch_{epoch+1}.png')
         self.trainer.adapter.visualize_samples(data, reconstruction, sample_path)
+        self._log_to_wandb('reconstructions/samples', sample_path, epoch)
+
         logger.info(f"Reconstruction plots saved: {save_path}")
 
     def _plot_embeddings(self, epoch, prefix='', max_batches=10):
@@ -119,7 +143,7 @@ class VisualizationCallback(Callback):
             for i, batch in enumerate(self.test_loader):
                 if i >= max_batches:
                     break
-                data = self.trainer.adapter.prepare_batch(batch, self.trainer.device)
+                data, _ = self.trainer.adapter.prepare_batch(batch, self.trainer.device)
                 _, embedding = self.trainer.model(data)
                 all_embeddings.append(embedding.cpu().numpy())
 
@@ -150,3 +174,4 @@ class VisualizationCallback(Callback):
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"Embedding analysis saved: {save_path}")
+        self._log_to_wandb('embeddings/distribution', save_path, epoch)

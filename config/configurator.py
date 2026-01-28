@@ -261,10 +261,14 @@ class ConfigurationManager:
             'data_root': ds.data_root,
             'metadata_file': os.path.join(ds.data_root, 'metadata.csv') if ds.data_root else '',
             'target_batch_size': ds.target_batch_size,
+            'dataset_key': getattr(ds, 'dataset_key', 'token'),
+            'test_val_strategy': getattr(ds, 'test_val_strategy', 'filter'),
             'test_val_participant_filter': getattr(ds, 'test_val_participant_filter', None),
             'test_val_session_filter': getattr(ds, 'test_val_session_filter', None),
             'test_val_experiment_filter': getattr(ds, 'test_val_experiment_filter', None),
             'test_val_label_filter': getattr(ds, 'test_val_label_filter', None),
+            'test_val_random_experiments': getattr(ds, 'test_val_random_experiments', None),
+            'test_val_multi_session': getattr(ds, 'test_val_multi_session', True),
             'test_val_split_ratio': getattr(ds, 'test_val_split_ratio', 0.5),
             'split_level': getattr(ds, 'split_level', 'sequence'),
             'random_seed': getattr(ds, 'random_seed', 353),
@@ -303,8 +307,14 @@ class ConfigurationManager:
             print("Pipeline set to probabilistic...")
             return np.random.default_rng()
 
-    def post_init_setup(self):
-        """Post-initialization setup"""
+    def post_init_setup(self, create_dirs=False):
+        """
+        Post-initialization setup.
+
+        Args:
+            create_dirs: If True, create checkpoint and data directories.
+                        Set to True only for training, not preprocessing.
+        """
         # Set paths if not provided
         if not self.get_train_data_root() and hasattr(self.global_setting.paths, 'train_base_data_path'):
             train_path = self.global_setting.paths.train_base_data_path
@@ -317,12 +327,13 @@ class ConfigurationManager:
         if not self.get_checkpoint_path() and hasattr(self.global_setting.paths, 'process_base_data_path'):
             self.ml.training.checkpoint_path = self.global_setting.paths.process_base_data_path
 
-        # Create directories
-        if self.get_checkpoint_path():
-            os.makedirs(self.get_checkpoint_path(), exist_ok=True)
+        # Only create directories when explicitly requested (e.g., during training)
+        if create_dirs:
+            if self.get_checkpoint_path():
+                os.makedirs(self.get_checkpoint_path(), exist_ok=True)
 
-        if self.get_train_data_root():
-            os.makedirs(self.get_train_data_root(), exist_ok=True)
+            if self.get_train_data_root():
+                os.makedirs(self.get_train_data_root(), exist_ok=True)
 
         # Setup WandB API key
         if hasattr(self.wandb, 'api_key') and self.wandb.api_key:
@@ -382,9 +393,14 @@ class ConfigurationManager:
         return OmegaConf.to_container(self._config, resolve=True)
 
 
-def load_config(config_path: str) -> ConfigurationManager:
+def load_config(config_path: str, create_dirs: bool = False) -> ConfigurationManager:
     """
     Load configuration using ConfigurationManager
+
+    Args:
+        config_path: Path to the YAML configuration file
+        create_dirs: If True, create checkpoint and data directories.
+                    Set to True for training, False for preprocessing.
     """
     try:
         # Load YAML with OmegaConf
@@ -394,7 +410,7 @@ def load_config(config_path: str) -> ConfigurationManager:
         config = ConfigurationManager(yaml_config)
 
         # Post-initialization setup
-        config.post_init_setup()
+        config.post_init_setup(create_dirs=create_dirs)
 
         return config
 

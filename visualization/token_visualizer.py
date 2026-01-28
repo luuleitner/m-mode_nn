@@ -1,13 +1,29 @@
 """
 Token Sample Visualizer
 
-Visualizes a random token sample in context:
+Visualizes a random token sample from PROCESSED data (train_base_data_path).
+Uses H5 files from a preprocessing run folder to show tokens and their labels.
+Also loads corresponding raw joystick data to show full signal context.
+
+Display layout:
 - Row 1: Full joystick signal with token window highlighted
 - Row 2: Zoomed window view (joystick + derivative + labels)
 - Row 3: 3 US channel M-mode images
 
 Usage:
-    python visualization/token_visualizer.py [--data-path /path/to/processed/run_folder]
+    python visualization/token_visualizer.py
+    python visualization/token_visualizer.py --seed 42
+    python visualization/token_visualizer.py --data-path /path/to/processed/run_folder
+    python visualization/token_visualizer.py --config config/config.yaml
+    python visualization/token_visualizer.py --by-class              # Show one sample per label class (0, 1, 2)
+    python visualization/token_visualizer.py --by-class --seed 42    # Reproducible by-class visualization
+
+Options:
+    -d, --data-path   Path to processed data folder (run_YYYYMMDD_HHMMSS or 'latest')
+                      If not specified, uses most recent run folder from config
+    -c, --config      Path to config.yaml (default: config/config.yaml)
+    -s, --seed        Random seed for reproducible sample selection
+    --by-class        Show 3 separate figures, one for each label class (0=Noise, 1=Up, 2=Down)
 """
 
 import os
