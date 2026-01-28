@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Standalone training script for CNN Autoencoder with width reduction.
 Includes model definitions and training/visualization code.

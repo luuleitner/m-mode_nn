@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 CNN-Transformer Hybrid Model for Ultrasound M-Mode Classification
 Integrates the CNN autoencoder encoder with transformer architecture.

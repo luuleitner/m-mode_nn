@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Dimension Checker and Guide Updater
 Automatically checks data dimensions and updates the data_dimensions_guide.md

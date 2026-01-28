@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Vanilla CNN Autoencoder for Ultrasound M-mode Data
 
