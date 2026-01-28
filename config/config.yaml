@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2025_wristus_wiicontroller_leitner"
     process_base_data_path: &process_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_CNN/Window18_Stride02_Labels_soft/run_20260128_101812"  # Set after preprocessing completes
+    train_base_data_path: &train_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_CNN/Window18_Stride02_Labels_soft/latest"
 
 # ========================================
 # ML PIPELINE CONFIGURATION
@@ -29,32 +29,85 @@ ml:
   loading:
     load_data_pickle: false
 
-  # Dataset Configuration
+  # =====================================================================
+  # DATASET CONFIGURATION - DATA SAMPLING PIPELINE
+  # =====================================================================
+  #
+  #  ┌─────────────────────────────────────────────────────────────────┐
+  #  │  H5 FILES (from preprocessing)                                 │
+  #  └──────────────────────────┬──────────────────────────────────────┘
+  #                             │
+  #                             ▼
+  #  ┌─────────────────────────────────────────────────────────────────┐
+  #  │  STEP 1: GLOBAL FILTERS (reduce dataset before splitting)      │
+  #  │          Applied with AND logic to ALL data                    │
+  #  └──────────────────────────┬──────────────────────────────────────┘
+  #                             │
+  #                             ▼
+  #  ┌─────────────────────────────────────────────────────────────────┐
+  #  │  STEP 2: TEST/VAL SELECTION (strategy: "filter" or "random")   │
+  #  │          Select which data goes to test/val                    │
+  #  └──────────────────────────┬──────────────────────────────────────┘
+  #                             │
+  #                             ▼
+  #  ┌─────────────────────────────────────────────────────────────────┐
+  #  │  STEP 3: SPLIT TEST/VAL (ratio + level)                        │
+  #  │          Divide selected data into test and val sets           │
+  #  └──────────────────────────┬──────────────────────────────────────┘
+  #                             │
+  #                             ▼
+  #  ┌─────────────────────────────────────────────────────────────────┐
+  #  │  STEP 4: TRAIN = REMAINDER (+ shuffling)                       │
+  #  │          Everything not in test/val becomes training           │
+  #  └─────────────────────────────────────────────────────────────────┘
+  #
   dataset:
+    # --- Data Source ---
     data_root: *train_base_data_path
     target_batch_size: &target_batch_size 50
     dataset_key: 'token'
-
-    # Test/Validation Filters
-    test_val_participant_filter: null
-    test_val_session_filter: [14]
-    test_val_experiment_filter: null
-    test_val_label_filter: null
-
-    # Split Configuration
-    test_val_split_ratio: 0.5
-    split_level: "sequence"
     random_seed: *global_seed
 
-    # Global Filters
-    global_participant_filter: null
-    global_session_filter: null
-    global_experiment_filter: null
-    global_label_filter: null
+    # =========================================
+    # STEP 1: GLOBAL FILTERS
+    # =========================================
+    # Applied to ALL data BEFORE any splitting.
+    # Use to reduce dataset (e.g., exclude bad sessions).
+    # Filters combine with AND logic.
+    global_participant_filter: null         # e.g., [1, 2, 3] - keep only these
+    global_session_filter: null             # e.g., [14, 15] - keep only these
+    global_experiment_filter: null          # e.g., [0, 1, 2] - keep only these
+    global_label_filter: null               # e.g., [1, 2] - keep only movement
 
-    # Data Shuffling
-    shuffle_experiments: true
-    shuffle_sequences: true
+    # =========================================
+    # STEP 2: TEST/VAL SELECTION STRATEGY
+    # =========================================
+    # Choose ONE strategy: "filter" or "random"
+    test_val_strategy: "random"
+
+    # --- Option A: FILTER strategy ---
+    # Select test/val by matching criteria (AND logic)
+    test_val_participant_filter: null       # e.g., [1, 2]
+    test_val_session_filter: null           # e.g., [14] - session 14 for test/val
+    test_val_experiment_filter: null        # e.g., [5, 6, 7]
+    test_val_label_filter: null             # e.g., [1, 2]
+
+    # --- Option B: RANDOM strategy ---
+    # Randomly select N experiments for test/val
+    test_val_random_experiments: 3          # Number of experiments to select
+    test_val_multi_session: true            # Prefer experiments from different sessions
+
+    # =========================================
+    # STEP 3: TEST/VAL SPLIT
+    # =========================================
+    test_val_split_ratio: 0.5               # 0.5 = 50% test, 50% val
+    split_level: "experiment"               # "sequence" or "experiment"
+
+    # =========================================
+    # STEP 4: SHUFFLING (for training)
+    # =========================================
+    shuffle_experiments: true               # Randomize experiment order
+    shuffle_sequences: true                 # Randomize sequence order within experiments
 
   # Model Architecture
   model:
@@ -98,6 +151,12 @@ ml:
       dropout_rate: 0.0              # Dropout rate (if applicable)
       batch_norm: true               # Use batch normalization
 
+    # Class Balancing (for imbalanced datasets)
+    class_balancing:
+      enabled: true                  # Enable class balancing
+      method: "both"                 # weighted_sampling | weighted_loss | both
+      # Class weights computed automatically from inverse frequency
+
     # Checkpointing
     checkpointing:
       save_best: true
@@ -106,19 +165,12 @@ ml:
 
     # Restart Configuration
     restart:
-      enable: True
-      auto_find_checkpoint: False
-      checkpoint_path: null          # Specific checkpoint path or null for auto-detection
+      enable: true
       save_restart_every: 10         # Save restart checkpoint every N epochs
 
     # Validation and Evaluation
     validation:
-      plot_every_n_epochs: 1        # Generate plots every N epochs
-      evaluate_on_test: true         # Evaluate on test set during training
-      early_stopping:
-        enable: false                # Enable early stopping
-        patience: 20                 # Early stopping patience
-        min_delta: 1e-6             # Minimum improvement threshold
+      plot_every_n_epochs: 1         # Generate plots every N epochs
 
 # ========================================
 # PREPROCESSING CONFIGURATION

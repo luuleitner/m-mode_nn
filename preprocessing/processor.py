@@ -166,6 +166,15 @@ class DataProcessor():
         os.makedirs(self._output_folder, exist_ok=True)
         logger.info(f"Created unique output folder: {self._output_folder}")
 
+        # Create/update 'latest' symlink pointing to this run
+        latest_link = os.path.join(params_folder, "latest")
+        if os.path.islink(latest_link):
+            os.unlink(latest_link)
+        elif os.path.exists(latest_link):
+            os.remove(latest_link)
+        os.symlink(f"run_{timestamp}", latest_link)
+        logger.info(f"Updated 'latest' symlink -> run_{timestamp}")
+
         # ---------------------------------------------
         # --------------PREPROCESS---------------------
         # ---------------------------------------------

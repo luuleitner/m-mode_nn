@@ -1,15 +1,20 @@
 """
 Verify Label Consistency
 
+Reads from RAW data (base_data_path/raw/) to verify label generation logic.
+
 Compares label generation between:
 1. preprocessing/label_logic/visualize.py (uses label_config.yaml)
 2. visualization/data_visualization.py (uses label_config.yaml via processor.py)
 
-Both should now produce IDENTICAL labels since they use the same config.
+Both should produce IDENTICAL labels since they use the same config.
 
 Usage:
     python visualization/verify_labels.py
     python visualization/verify_labels.py --exp-path /vol/data/.../session14_W_001/10
+
+Options:
+    --exp-path    Specific experiment path to verify
 """
 
 import os

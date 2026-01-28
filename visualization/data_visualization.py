@@ -1,6 +1,9 @@
 """
 Data Visualization - Verify config settings by visualizing raw vs processed data.
 
+Reads from RAW data (base_data_path/raw/) and applies processing on-the-fly.
+Use this to verify your preprocessing config before running the full preprocessor.
+
 Uses Plotly for interactive zooming. Displays:
 - M-mode heatmaps with joystick overlay and label regions
 - Raw vs Processed comparison for all 3 US channels
@@ -9,6 +12,12 @@ Usage:
     python visualization/data_visualization.py
     python visualization/data_visualization.py --seed 42
     python visualization/data_visualization.py --exp-path /path/to/session/experiment
+    python visualization/data_visualization.py --config config/config.yaml
+
+Options:
+    --config      Path to config.yaml (default: config/config.yaml)
+    --seed        Random seed for reproducible experiment selection
+    --exp-path    Specific experiment path (overrides random selection)
 """
 
 import os

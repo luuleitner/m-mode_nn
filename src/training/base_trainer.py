@@ -104,13 +104,44 @@ class BaseTrainer:
         if self.scheduler:
             logger.info(f"Scheduler: {type(self.scheduler).__name__}")
 
-    def compute_loss(self, reconstruction, target, embedding, loss_weights=None):
-        """Compute combined reconstruction loss (MSE + L1 + embedding regularization)."""
+    def compute_loss(self, reconstruction, target, embedding, labels=None, loss_weights=None):
+        """
+        Compute combined reconstruction loss (MSE + L1 + embedding regularization).
+        Optionally applies per-sample weighting based on class labels.
+        """
         if loss_weights is None:
             loss_weights = {'mse_weight': 0.8, 'l1_weight': 0.2, 'embedding_reg': 0.001}
 
-        mse_loss = F.mse_loss(reconstruction, target)
-        l1_loss = F.l1_loss(reconstruction, target)
+        class_weights = loss_weights.get('class_weights', None)
+
+        # Apply class-weighted loss if labels and class_weights are provided
+        if labels is not None and class_weights is not None:
+            # Get hard labels from soft labels (argmax)
+            if labels.dim() > 1:
+                hard_labels = labels.argmax(dim=-1)  # [B] or [B, seq_len]
+                if hard_labels.dim() > 1:
+                    hard_labels = hard_labels[:, 0]  # Take first in sequence for batch weight
+            else:
+                hard_labels = labels
+
+            # Compute per-sample weights based on class
+            sample_weights = torch.tensor(
+                [class_weights.get(int(lbl.item()), 1.0) for lbl in hard_labels],
+                device=reconstruction.device, dtype=reconstruction.dtype
+            )
+
+            # Compute per-sample losses, then weight
+            # MSE per sample: mean over (C, H, W) dims
+            mse_per_sample = F.mse_loss(reconstruction, target, reduction='none').mean(dim=(1, 2, 3))
+            l1_per_sample = F.l1_loss(reconstruction, target, reduction='none').mean(dim=(1, 2, 3))
+
+            # Weighted mean
+            mse_loss = (sample_weights * mse_per_sample).mean()
+            l1_loss = (sample_weights * l1_per_sample).mean()
+        else:
+            mse_loss = F.mse_loss(reconstruction, target)
+            l1_loss = F.l1_loss(reconstruction, target)
+
         embedding_reg = embedding.pow(2).mean()
 
         total_loss = (
@@ -136,11 +167,11 @@ class BaseTrainer:
         pbar = tqdm(train_loader, desc=f'Epoch {epoch + 1}')
 
         for batch_idx, batch in enumerate(pbar):
-            data = self.adapter.prepare_batch(batch, self.device)
+            data, labels = self.adapter.prepare_batch(batch, self.device)
 
             # Forward
             reconstruction, embedding = self.model(data)
-            loss, loss_dict = self.compute_loss(reconstruction, data, embedding, loss_weights)
+            loss, loss_dict = self.compute_loss(reconstruction, data, embedding, labels, loss_weights)
 
             # Backward
             self.optimizer.zero_grad()
@@ -166,7 +197,7 @@ class BaseTrainer:
 
         with torch.no_grad():
             for batch in val_loader:
-                data = self.adapter.prepare_batch(batch, self.device)
+                data, labels = self.adapter.prepare_batch(batch, self.device)
                 reconstruction, embedding = self.model(data)
 
                 _, loss_dict = self.compute_loss(reconstruction, data, embedding)
@@ -197,7 +228,7 @@ class BaseTrainer:
 
         # Log input info
         sample_batch = next(iter(train_loader))
-        sample_data = self.adapter.prepare_batch(sample_batch, self.device)
+        sample_data, _ = self.adapter.prepare_batch(sample_batch, self.device)
         logger.info(f"Input info: {self.adapter.get_input_info(sample_data)}")
 
         self.callbacks.on_train_begin({'epochs': epochs, 'start_epoch': start_epoch})
@@ -252,7 +283,7 @@ class BaseTrainer:
 
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Evaluating"):
-                data = self.adapter.prepare_batch(batch, self.device)
+                data, _ = self.adapter.prepare_batch(batch, self.device)
                 reconstruction, _ = self.model(data)
 
                 mse = F.mse_loss(reconstruction, data, reduction='sum')

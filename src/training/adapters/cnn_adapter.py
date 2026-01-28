@@ -18,12 +18,23 @@ class CNNAdapter(BaseAdapter):
         return "[B, C, H, W] = [Batch, US_Channels, Depth, Pulses]"
 
     def prepare_batch(self, batch, device):
-        """Prepare batch for CNN model. Handles (data, label) tuples or plain tensors."""
-        if isinstance(batch, (list, tuple)):
-            data = batch[0]
+        """
+        Prepare batch for CNN model.
+        Handles dict format {'tokens': tensor, 'labels': tensor}, tuples, or plain tensors.
+
+        Returns:
+            tuple: (data, labels) where labels may be None
+        """
+        if isinstance(batch, dict):
+            data = batch['tokens'].to(device)
+            labels = batch['labels'].to(device) if batch['labels'] is not None else None
+            return data, labels
+        elif isinstance(batch, (list, tuple)):
+            data = batch[0].to(device)
+            labels = batch[1].to(device) if len(batch) > 1 else None
+            return data, labels
         else:
-            data = batch
-        return data.to(device)
+            return batch.to(device), None
 
     def get_input_info(self, data):
         """Extract shape information for logging."""

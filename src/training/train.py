@@ -16,7 +16,7 @@ import pickle
 from datetime import datetime
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -153,17 +153,42 @@ def load_or_create_datasets(config):
 
 
 def create_dataloaders(train_ds, val_ds, test_ds, config):
-    """Create data loaders."""
+    """Create data loaders with optional balanced sampling."""
     resource_config = config.get_resource_config()
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=None,  # Pre-batched
-        shuffle=True,
-        num_workers=resource_config['num_workers'],
-        pin_memory=resource_config['pin_memory'],
-        prefetch_factor=resource_config['prefetch_factor']
+    # Check if class balancing is enabled
+    balancing_config = getattr(config.ml.training, 'class_balancing', None)
+    use_balanced_sampling = (
+        balancing_config is not None and
+        getattr(balancing_config, 'enabled', False) and
+        getattr(balancing_config, 'method', '') in ['weighted_sampling', 'both']
     )
+
+    if use_balanced_sampling:
+        logger.info("Using weighted sampling for class balancing")
+        sample_weights = train_ds.get_sample_weights()
+        sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(sample_weights),
+            replacement=True
+        )
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=None,  # Pre-batched
+            sampler=sampler,  # Use sampler instead of shuffle
+            num_workers=resource_config['num_workers'],
+            pin_memory=resource_config['pin_memory'],
+            prefetch_factor=resource_config['prefetch_factor']
+        )
+    else:
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=None,  # Pre-batched
+            shuffle=True,
+            num_workers=resource_config['num_workers'],
+            pin_memory=resource_config['pin_memory'],
+            prefetch_factor=resource_config['prefetch_factor']
+        )
 
     val_loader = DataLoader(
         val_ds,
@@ -188,8 +213,8 @@ def create_dataloaders(train_ds, val_ds, test_ds, config):
 
 def main(config_path, restart=False):
     """Main training function."""
-    # Load config
-    config = load_config(config_path)
+    # Load config (create_dirs=True to create checkpoint directories)
+    config = load_config(config_path, create_dirs=True)
     setup_environment(config)
 
     logger.info("=" * 60)
@@ -232,6 +257,19 @@ def main(config_path, restart=False):
     # Get training parameters
     loss_weights = config.get_loss_weights()
     regularization = config.get_regularization_config()
+
+    # Add class weights for weighted loss if enabled
+    balancing_config = getattr(config.ml.training, 'class_balancing', None)
+    use_weighted_loss = (
+        balancing_config is not None and
+        getattr(balancing_config, 'enabled', False) and
+        getattr(balancing_config, 'method', '') in ['weighted_loss', 'both']
+    )
+
+    if use_weighted_loss:
+        class_weights = train_ds.get_class_weights()
+        loss_weights['class_weights'] = class_weights
+        logger.info(f"Using weighted loss with class weights: {class_weights}")
 
     # Train
     try:

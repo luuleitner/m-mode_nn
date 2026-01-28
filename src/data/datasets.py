@@ -25,10 +25,13 @@ class FilteredSplitH5Dataset(Dataset):
                  dataset_key='token',
                  data_root=None,
                  split_type='train',
+                 test_val_strategy='filter',
                  test_val_participant_filter=None,
                  test_val_session_filter=None,
                  test_val_experiment_filter=None,
                  test_val_label_filter=None,
+                 test_val_random_experiments=None,
+                 test_val_multi_session=True,
                  test_val_split_ratio=0.5,
                  split_level='sequence',
                  random_seed=42,
@@ -43,7 +46,10 @@ class FilteredSplitH5Dataset(Dataset):
         """
         Args:
             split_type: Which dataset to return ('train', 'test', 'val')
-            test_val_*_filter: Filters to identify data for test/validation
+            test_val_strategy: 'filter' or 'random' - determines which method to use
+            test_val_*_filter: Filters for test/val (used when strategy='filter')
+            test_val_random_experiments: Number of experiments (used when strategy='random')
+            test_val_multi_session: Prefer multi-session coverage (used when strategy='random')
             test_val_split_ratio: How to split filtered data (0.5 = 50% test, 50% val)
             split_level: Whether to split filtered data by 'sequence' or 'experiment'
             global_*_filter: Filters applied to ALL data before any splitting
@@ -69,9 +75,11 @@ class FilteredSplitH5Dataset(Dataset):
 
         # Create train/test/val splits
         self._create_splits(
+            test_val_strategy,
             test_val_participant_filter, test_val_session_filter,
             test_val_experiment_filter, test_val_label_filter,
-            test_val_split_ratio, split_level, _suppress_split_info, _suppress_metadata_info   # PASS THE FLAG
+            test_val_random_experiments, test_val_multi_session,
+            test_val_split_ratio, split_level, _suppress_split_info, _suppress_metadata_info
         )
 
         # Process the requested split
@@ -132,45 +140,80 @@ class FilteredSplitH5Dataset(Dataset):
             ]
             print(f"Global label_logic filter: -> {len(self.metadata)} sequences")
 
-    def _create_splits(self, test_val_participant_filter, test_val_session_filter,
+    def _create_splits(self, test_val_strategy,
+                       test_val_participant_filter, test_val_session_filter,
                        test_val_experiment_filter, test_val_label_filter,
+                       test_val_random_experiments, test_val_multi_session,
                        test_val_split_ratio, split_level, suppress_split_print=False,
-                       suppress_metadata_print=False):  # ADD BOTH PARAMETERS
-        """Create train/test/val splits based on filters"""
+                       suppress_metadata_print=False):
+        """
+        Create train/test/val splits based on explicit strategy.
+
+        Strategy options:
+            - "filter": Use test_val_*_filter parameters (combined with AND logic)
+            - "random": Randomly select N experiments using test_val_random_experiments
+        """
 
         # Start with all globally filtered data
         all_data = self.metadata.copy().reset_index(drop=True)
 
-        # Identify test/validation candidates using filters
-        test_val_candidates = all_data.copy()
-        filter_applied = False
+        # =========================================================
+        # STRATEGY: RANDOM EXPERIMENT SELECTION
+        # =========================================================
+        if test_val_strategy == 'random':
+            if test_val_random_experiments is None or test_val_random_experiments <= 0:
+                raise ValueError("strategy='random' requires test_val_random_experiments > 0")
 
-        if test_val_participant_filter is not None:
-            test_val_candidates = test_val_candidates[
-                test_val_candidates['participant'].isin(test_val_participant_filter)
-            ]
-            filter_applied = True
+            if not suppress_metadata_print:
+                print(f"Using RANDOM strategy: selecting {test_val_random_experiments} experiments")
 
-        if test_val_session_filter is not None:
-            test_val_candidates = test_val_candidates[
-                test_val_candidates['session'].isin(test_val_session_filter)
-            ]
-            filter_applied = True
+            test_val_candidates = self._select_random_experiments(
+                all_data, test_val_random_experiments, test_val_multi_session,
+                suppress_print=suppress_metadata_print
+            )
 
-        if test_val_experiment_filter is not None:
-            test_val_candidates = test_val_candidates[
-                test_val_candidates['experiment'].isin(test_val_experiment_filter)
-            ]
-            filter_applied = True
+        # =========================================================
+        # STRATEGY: FILTER-BASED SELECTION
+        # =========================================================
+        elif test_val_strategy == 'filter':
+            if not suppress_metadata_print:
+                print("Using FILTER strategy")
 
-        if test_val_label_filter is not None:
-            test_val_candidates = test_val_candidates[
-                test_val_candidates['label_logic'].isin(test_val_label_filter)
-            ]
-            filter_applied = True
+            test_val_candidates = all_data.copy()
+            filters_applied = []
 
-        if not filter_applied:
-            raise ValueError("No test/validation filters specified. Please specify at least one test_val_*_filter")
+            if test_val_participant_filter is not None:
+                test_val_candidates = test_val_candidates[
+                    test_val_candidates['participant'].isin(test_val_participant_filter)
+                ]
+                filters_applied.append(f"participant={test_val_participant_filter}")
+
+            if test_val_session_filter is not None:
+                test_val_candidates = test_val_candidates[
+                    test_val_candidates['session'].isin(test_val_session_filter)
+                ]
+                filters_applied.append(f"session={test_val_session_filter}")
+
+            if test_val_experiment_filter is not None:
+                test_val_candidates = test_val_candidates[
+                    test_val_candidates['experiment'].isin(test_val_experiment_filter)
+                ]
+                filters_applied.append(f"experiment={test_val_experiment_filter}")
+
+            if test_val_label_filter is not None:
+                test_val_candidates = test_val_candidates[
+                    test_val_candidates['label_logic'].isin(test_val_label_filter)
+                ]
+                filters_applied.append(f"label={test_val_label_filter}")
+
+            if not filters_applied:
+                raise ValueError("strategy='filter' requires at least one test_val_*_filter to be set")
+
+            if not suppress_metadata_print:
+                print(f"  Filters (AND): {' AND '.join(filters_applied)}")
+
+        else:
+            raise ValueError(f"Unknown test_val_strategy: '{test_val_strategy}'. Use 'filter' or 'random'")
 
         test_val_candidates = test_val_candidates.reset_index(drop=True)
 
@@ -240,6 +283,112 @@ class FilteredSplitH5Dataset(Dataset):
             print(f"  - Train: {len(train_data)} sequences")
             print(f"  - Test: {len(test_data)} sequences")
             print(f"  - Val: {len(val_data)} sequences")
+
+    def _select_random_experiments(self, all_data, num_experiments, multi_session=True,
+                                      suppress_print=False):
+        """
+        Randomly select experiments for test/val set.
+
+        Args:
+            all_data: DataFrame with all data
+            num_experiments: Number of experiments to select
+            multi_session: If True and multiple sessions exist, ensure experiments
+                          come from multiple sessions for better generalization
+
+        Returns:
+            DataFrame containing only the selected experiments
+        """
+        # Get unique experiments with their session info
+        experiment_info = all_data.groupby('file_path').agg({
+            'session': 'first',
+            'experiment': 'first'
+        }).reset_index()
+
+        available_experiments = experiment_info['file_path'].tolist()
+        num_available = len(available_experiments)
+
+        if num_experiments > num_available:
+            if not suppress_print:
+                print(f"Warning: Requested {num_experiments} experiments but only "
+                      f"{num_available} available. Using all.")
+            num_experiments = num_available
+
+        # Check if multi-session selection is possible and desired
+        unique_sessions = experiment_info['session'].unique()
+        num_sessions = len(unique_sessions)
+
+        if multi_session and num_sessions > 1 and num_experiments >= 2:
+            # Try to select experiments from multiple sessions
+            selected_experiments = self._select_multi_session_experiments(
+                experiment_info, num_experiments, suppress_print
+            )
+        else:
+            # Simple random selection
+            random.seed(self.random_seed)
+            selected_experiments = random.sample(available_experiments, num_experiments)
+
+        if not suppress_print:
+            selected_sessions = experiment_info[
+                experiment_info['file_path'].isin(selected_experiments)
+            ]['session'].unique()
+            print(f"Random experiment selection: {num_experiments} experiments "
+                  f"from {len(selected_sessions)} session(s)")
+
+        # Filter data to only include selected experiments
+        return all_data[all_data['file_path'].isin(selected_experiments)]
+
+    def _select_multi_session_experiments(self, experiment_info, num_experiments,
+                                          suppress_print=False):
+        """
+        Select experiments ensuring coverage from multiple sessions.
+
+        Strategy:
+        1. Group experiments by session
+        2. Distribute selection across sessions as evenly as possible
+        3. Random selection within each session
+        """
+        random.seed(self.random_seed)
+
+        # Group experiments by session
+        session_experiments = {}
+        for session in experiment_info['session'].unique():
+            session_exps = experiment_info[
+                experiment_info['session'] == session
+            ]['file_path'].tolist()
+            session_experiments[session] = session_exps
+
+        sessions = list(session_experiments.keys())
+        num_sessions = len(sessions)
+
+        # Calculate how many experiments to take from each session
+        base_per_session = num_experiments // num_sessions
+        remainder = num_experiments % num_sessions
+
+        selected = []
+
+        # Shuffle sessions to randomize which get the extra experiments
+        random.shuffle(sessions)
+
+        for i, session in enumerate(sessions):
+            available = session_experiments[session]
+            # First 'remainder' sessions get one extra experiment
+            take = base_per_session + (1 if i < remainder else 0)
+            take = min(take, len(available))
+
+            if take > 0:
+                session_selected = random.sample(available, take)
+                selected.extend(session_selected)
+
+        # If we still need more experiments (some sessions had fewer than expected)
+        while len(selected) < num_experiments:
+            # Find experiments not yet selected
+            all_exps = experiment_info['file_path'].tolist()
+            remaining = [e for e in all_exps if e not in selected]
+            if not remaining:
+                break
+            selected.append(random.choice(remaining))
+
+        return selected
 
     def _split_test_val_data(self, test_val_data, test_ratio, split_level):
         """Split the filtered test/val data between test and validation"""
@@ -345,13 +494,14 @@ class FilteredSplitH5Dataset(Dataset):
         return len(self.batch_mapping)
 
     def __getitem__(self, batch_idx):
-        """Load and return a batch of sequences"""
+        """Load and return a batch of sequences with labels"""
 
         if batch_idx >= len(self.batch_mapping):
             raise IndexError(f"Batch index {batch_idx} out of range")
 
         batch_info = self.batch_mapping[batch_idx]
         batch_sequences = []
+        batch_labels = []
 
         # Group batch info by file to minimize file operations
         file_groups = defaultdict(list)
@@ -369,6 +519,7 @@ class FilteredSplitH5Dataset(Dataset):
             # Load data from H5 file
             with h5py.File(full_path, 'r') as f:
                 file_sequences = []
+                file_labels = []
 
                 for seq_meta in sequences_metadata:
                     sequence_idx = int(seq_meta['sequence_id'])
@@ -377,10 +528,19 @@ class FilteredSplitH5Dataset(Dataset):
                     sequence_data = f[self.dataset_key][sequence_idx]
                     file_sequences.append(sequence_data)
 
+                    # Load labels if available
+                    if 'label' in f:
+                        label_data = f['label'][sequence_idx]
+                        file_labels.append(label_data)
+
                 # Stack sequences from this file
                 if file_sequences:
                     file_batch = np.stack(file_sequences, axis=0)
                     batch_sequences.append(file_batch)
+
+                if file_labels:
+                    label_batch = np.stack(file_labels, axis=0)
+                    batch_labels.append(label_batch)
 
         # Concatenate all sequences in the batch
         if len(batch_sequences) == 1:
@@ -389,9 +549,20 @@ class FilteredSplitH5Dataset(Dataset):
             final_batch = np.concatenate(batch_sequences, axis=0)
         else:
             # Empty batch - shouldn't happen but handle gracefully
-            return torch.empty(0)
+            return {'tokens': torch.empty(0), 'labels': torch.empty(0)}
 
-        return torch.from_numpy(final_batch)
+        # Concatenate labels
+        if len(batch_labels) == 1:
+            final_labels = batch_labels[0]
+        elif len(batch_labels) > 1:
+            final_labels = np.concatenate(batch_labels, axis=0)
+        else:
+            final_labels = None
+
+        return {
+            'tokens': torch.from_numpy(final_batch),
+            'labels': torch.from_numpy(final_labels) if final_labels is not None else None
+        }
 
     def get_batch_metadata(self, batch_idx):
         """Get metadata for all sequences in a specific batch"""
@@ -431,15 +602,78 @@ class FilteredSplitH5Dataset(Dataset):
         print(f"  - Unique experiments: {len(self.experiment_groups)}")
         print(f"  - Total batches: {len(self.batch_mapping)}")
 
+    def get_sample_weights(self):
+        """
+        Compute sample weights for balanced sampling based on label distribution.
+
+        Returns:
+            torch.Tensor: Weight for each batch (inverse frequency of dominant class)
+        """
+        if 'label_logic' not in self.metadata.columns:
+            print("Warning: No label_logic column in metadata, returning uniform weights")
+            return torch.ones(len(self.batch_mapping))
+
+        # Count class frequencies across all samples
+        class_counts = self.metadata['label_logic'].value_counts().to_dict()
+        total_samples = len(self.metadata)
+
+        # Compute inverse frequency weights for each class
+        # Higher weight for less frequent classes
+        class_weights = {}
+        for cls, count in class_counts.items():
+            class_weights[cls] = total_samples / (len(class_counts) * count)
+
+        print(f"Class balancing weights: {class_weights}")
+
+        # Assign weight to each batch based on dominant class in batch
+        batch_weights = []
+        for batch_info in self.batch_mapping:
+            # Get labels for this batch
+            batch_labels = [item['sequence_metadata'].get('label_logic', 0) for item in batch_info]
+            # Use mean weight of samples in batch
+            batch_weight = np.mean([class_weights.get(lbl, 1.0) for lbl in batch_labels])
+            batch_weights.append(batch_weight)
+
+        return torch.tensor(batch_weights, dtype=torch.float32)
+
+    def get_class_weights(self):
+        """
+        Compute class weights for weighted loss function.
+
+        Returns:
+            dict: {class_id: weight} mapping
+        """
+        if 'label_logic' not in self.metadata.columns:
+            return {0: 1.0, 1: 1.0, 2: 1.0}
+
+        class_counts = self.metadata['label_logic'].value_counts().to_dict()
+        total_samples = len(self.metadata)
+        num_classes = len(class_counts)
+
+        # Inverse frequency weighting
+        class_weights = {}
+        for cls, count in class_counts.items():
+            class_weights[int(cls)] = total_samples / (num_classes * count)
+
+        # Ensure all classes 0, 1, 2 are present
+        for cls in [0, 1, 2]:
+            if cls not in class_weights:
+                class_weights[cls] = 1.0
+
+        return class_weights
+
 
 def create_filtered_split_datasets(
         metadata_file,
         target_batch_size=200,
         dataset_key='token',
+        test_val_strategy='filter',
         test_val_session_filter=None,
         test_val_participant_filter=None,
         test_val_experiment_filter=None,
         test_val_label_filter=None,
+        test_val_random_experiments=None,
+        test_val_multi_session=True,
         test_val_split_ratio=0.5,
         split_level='sequence',
         random_seed=353,
@@ -454,7 +688,10 @@ def create_filtered_split_datasets(
     Convenience function to create datasets with filtered splitting
 
     Args:
-        test_val_*_filter: Data matching these filters becomes test/validation data
+        test_val_strategy: 'filter' or 'random' - determines split method
+        test_val_*_filter: Data matching these filters (AND logic) for test/val
+        test_val_random_experiments: Number of experiments for random strategy
+        test_val_multi_session: Prefer multi-session coverage in random strategy
         test_val_split_ratio: How to split filtered data (0.5 = 50% test, 50% val)
 
     Returns:
@@ -464,15 +701,18 @@ def create_filtered_split_datasets(
     common_kwargs = {
         'metadata_file': metadata_file,
         'target_batch_size': target_batch_size,
-        'dataset_key': dataset_key,  # ADD THIS LINE
+        'dataset_key': dataset_key,
+        'test_val_strategy': test_val_strategy,
         'test_val_session_filter': test_val_session_filter,
         'test_val_participant_filter': test_val_participant_filter,
         'test_val_experiment_filter': test_val_experiment_filter,
         'test_val_label_filter': test_val_label_filter,
+        'test_val_random_experiments': test_val_random_experiments,
+        'test_val_multi_session': test_val_multi_session,
         'test_val_split_ratio': test_val_split_ratio,
         'split_level': split_level,
-        'random_seed': random_seed,  # ADD THIS LINE
-        'global_participant_filter': global_participant_filter,  # ADD THESE LINES
+        'random_seed': random_seed,
+        'global_participant_filter': global_participant_filter,
         'global_session_filter': global_session_filter,
         'global_experiment_filter': global_experiment_filter,
         'global_label_filter': global_label_filter,
@@ -505,7 +745,7 @@ def create_filtered_split_datasets(
 
     return train_dataset, test_dataset, val_dataset
 
-# Example usage
+
 if __name__ == "__main__":
     # Your specific use case: Filter session 11, split 50/50 between test/val
     # Everything else goes to training
