@@ -5,8 +5,10 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import random
-from collections import defaultdict
+from collections import defaultdict, Counter
 from sklearn.model_selection import train_test_split
+
+from src.data.augmentations import SignalAugmenter
 
 
 class FilteredSplitH5Dataset(Dataset):
@@ -41,6 +43,10 @@ class FilteredSplitH5Dataset(Dataset):
                  global_label_filter=None,
                  shuffle_experiments=True,
                  shuffle_sequences=True,
+                 # Class balancing parameters
+                 balance_classes=False,
+                 balance_strategy='oversample',
+                 oversample_config=None,
                  _suppress_split_info=False,
                  _suppress_metadata_info=False):
         """
@@ -53,6 +59,14 @@ class FilteredSplitH5Dataset(Dataset):
             test_val_split_ratio: How to split filtered data (0.5 = 50% test, 50% val)
             split_level: Whether to split filtered data by 'sequence' or 'experiment'
             global_*_filter: Filters applied to ALL data before any splitting
+            balance_classes: Enable class balancing for training set
+            balance_strategy: 'oversample' or 'undersample'
+            oversample_config: Configuration for oversampling:
+                {
+                    'method': 'augment' | 'duplicate' | 'mixed',
+                    'target_ratio': 1.0,  # Match majority class
+                    'augmentations': {...}  # Augmentation config
+                }
             _suppress_split_info: If True, suppress printing of split information
         """
 
@@ -61,6 +75,9 @@ class FilteredSplitH5Dataset(Dataset):
         self.data_root = Path(data_root) if data_root else None
         self.split_type = split_type
         self.random_seed = random_seed
+        self.balance_classes = balance_classes
+        self.balance_strategy = balance_strategy
+        self.oversample_config = oversample_config or {}
 
         # Set random seeds for reproducibility
         random.seed(random_seed)
@@ -85,7 +102,12 @@ class FilteredSplitH5Dataset(Dataset):
         # Process the requested split
         self.metadata = self.splits[split_type].copy()
         self._process_metadata(shuffle_experiments, shuffle_sequences)
-        self._build_batch_mapping()
+
+        # Build batch mapping (balanced for train if enabled)
+        if self.balance_classes and split_type == 'train':
+            self._build_batch_mapping_balanced()
+        else:
+            self._build_batch_mapping()
 
         self._print_dataset_info()
 
@@ -490,12 +512,187 @@ class FilteredSplitH5Dataset(Dataset):
         if current_batch:
             self.batch_mapping.append(current_batch)
 
+    def _build_batch_mapping_balanced(self):
+        """
+        Build balanced batch mapping by oversampling minority classes.
+
+        Strategy:
+        1. Keep ALL majority class samples (appear exactly once)
+        2. Oversample minority classes to match majority class count
+        3. Apply augmentation to oversampled minority samples
+        4. Shuffle and build batches with ~equal class distribution
+        """
+        self.batch_mapping = []
+
+        if len(self.metadata) == 0:
+            return
+
+        # Get label column
+        label_col = 'label_logic' if 'label_logic' in self.metadata.columns else 'token label_logic'
+        if label_col not in self.metadata.columns:
+            print("Warning: No label column found, falling back to unbalanced batching")
+            self._build_batch_mapping()
+            return
+
+        # Collect all sequences with their metadata
+        all_sequences = []
+        for exp_file in self.experiment_list:
+            exp_sequences = self.experiment_groups[exp_file]
+            for idx, row in exp_sequences.iterrows():
+                all_sequences.append({
+                    'file_path': exp_file,
+                    'sequence_metadata': row.to_dict(),
+                    'label': int(row[label_col]),
+                    'is_augmented': False
+                })
+
+        # Group sequences by label
+        sequences_by_label = defaultdict(list)
+        for seq in all_sequences:
+            sequences_by_label[seq['label']].append(seq)
+
+        # Count samples per class
+        class_counts = {label: len(seqs) for label, seqs in sequences_by_label.items()}
+        majority_class = max(class_counts, key=class_counts.get)
+        majority_count = class_counts[majority_class]
+
+        print(f"Class distribution before balancing: {class_counts}")
+        print(f"Majority class: {majority_class} with {majority_count} samples")
+
+        # Determine oversampling method
+        method = self.oversample_config.get('method', 'augment')
+        target_ratio = self.oversample_config.get('target_ratio', 1.0)
+        target_count = int(majority_count * target_ratio)
+
+        # Create augmenter if needed (store as class attribute for __getitem__)
+        self.augmenter = None
+        if method in ['augment', 'mixed']:
+            aug_config = self.oversample_config.get('augmentations', {})
+            self.augmenter = SignalAugmenter(config=aug_config, seed=self.random_seed)
+            print(f"Augmentation config: {self.augmenter.get_config()}")
+
+        # Build balanced sequence pool
+        balanced_sequences = []
+
+        for label, sequences in sequences_by_label.items():
+            current_count = len(sequences)
+
+            # Add all original sequences
+            balanced_sequences.extend(sequences)
+
+            # If minority class, oversample to match target
+            if current_count < target_count:
+                samples_needed = target_count - current_count
+                print(f"Class {label}: oversampling {current_count} -> {target_count} "
+                      f"(+{samples_needed} samples)")
+
+                # Determine how to create oversampled sequences
+                if method == 'duplicate':
+                    # Pure duplication
+                    oversampled = self._oversample_duplicate(sequences, samples_needed)
+                elif method == 'augment':
+                    # All augmented
+                    oversampled = self._oversample_augment(sequences, samples_needed, self.augmenter)
+                elif method == 'mixed':
+                    # Mix of duplicates and augmented
+                    augment_ratio = self.oversample_config.get('augment_ratio', 0.5)
+                    n_augment = int(samples_needed * augment_ratio)
+                    n_duplicate = samples_needed - n_augment
+                    oversampled = (
+                        self._oversample_duplicate(sequences, n_duplicate) +
+                        self._oversample_augment(sequences, n_augment, self.augmenter)
+                    )
+                else:
+                    raise ValueError(f"Unknown oversample method: {method}")
+
+                balanced_sequences.extend(oversampled)
+
+        # Shuffle all sequences
+        random.shuffle(balanced_sequences)
+
+        # Report new distribution
+        new_counts = Counter(seq['label'] for seq in balanced_sequences)
+        augmented_counts = Counter(seq['label'] for seq in balanced_sequences if seq['is_augmented'])
+        print(f"Class distribution after balancing: {dict(new_counts)}")
+        print(f"Augmented samples per class: {dict(augmented_counts)}")
+
+        # Build batches from balanced pool
+        current_batch = []
+        for seq in balanced_sequences:
+            current_batch.append({
+                'file_path': seq['file_path'],
+                'sequence_metadata': seq['sequence_metadata'],
+                'is_augmented': seq['is_augmented']
+            })
+
+            if len(current_batch) >= self.target_batch_size:
+                self.batch_mapping.append(current_batch)
+                current_batch = []
+
+        # Add remaining as final batch
+        if current_batch:
+            self.batch_mapping.append(current_batch)
+
+        # Update metadata to include is_augmented flag
+        self._update_metadata_with_augmented_flag(balanced_sequences)
+
+        print(f"Built {len(self.batch_mapping)} balanced batches "
+              f"(was {len(all_sequences) // self.target_batch_size + 1} unbalanced)")
+
+    def _oversample_duplicate(self, sequences, n_samples):
+        """Create n_samples by duplicating existing sequences."""
+        oversampled = []
+        for i in range(n_samples):
+            # Sample with replacement from original sequences
+            original = random.choice(sequences)
+            oversampled.append({
+                'file_path': original['file_path'],
+                'sequence_metadata': original['sequence_metadata'].copy(),
+                'label': original['label'],
+                'is_augmented': False  # Exact duplicate, not augmented
+            })
+        return oversampled
+
+    def _oversample_augment(self, sequences, n_samples, augmenter):
+        """Create n_samples by augmenting existing sequences."""
+        oversampled = []
+        for i in range(n_samples):
+            # Sample with replacement from original sequences
+            original = random.choice(sequences)
+            # Mark as augmented - actual augmentation happens in __getitem__
+            aug_metadata = original['sequence_metadata'].copy()
+            aug_metadata['is_augmented'] = True
+            aug_metadata['augment_seed'] = self.random_seed + i  # Unique seed per sample
+
+            oversampled.append({
+                'file_path': original['file_path'],
+                'sequence_metadata': aug_metadata,
+                'label': original['label'],
+                'is_augmented': True
+            })
+        return oversampled
+
+    def _update_metadata_with_augmented_flag(self, balanced_sequences):
+        """Update metadata DataFrame to reflect balanced sequences."""
+        # Create new metadata from balanced sequences
+        new_metadata = []
+        for seq in balanced_sequences:
+            meta = seq['sequence_metadata'].copy()
+            meta['is_augmented'] = seq['is_augmented']
+            new_metadata.append(meta)
+
+        self.metadata = pd.DataFrame(new_metadata)
+
     def __len__(self):
         return len(self.batch_mapping)
 
     def __getitem__(self, batch_idx):
-        """Load and return a batch of sequences with labels"""
+        """
+        Load and return a batch of sequences with labels.
 
+        IMPORTANT: Order of samples in output matches order in batch_mapping.
+        This is critical for correct label-sample association.
+        """
         if batch_idx >= len(self.batch_mapping):
             raise IndexError(f"Batch index {batch_idx} out of range")
 
@@ -503,59 +700,61 @@ class FilteredSplitH5Dataset(Dataset):
         batch_sequences = []
         batch_labels = []
 
-        # Group batch info by file to minimize file operations
-        file_groups = defaultdict(list)
-        for item in batch_info:
-            file_groups[item['file_path']].append(item['sequence_metadata'])
+        # Cache open file handles to avoid reopening same file multiple times
+        file_cache = {}
 
-        # Load sequences from each file
-        for file_path, sequences_metadata in file_groups.items():
-            # Get full file path
-            if self.data_root:
-                full_path = self.data_root / file_path
-            else:
-                full_path = Path(file_path)
+        try:
+            # Process items IN ORDER - preserving batch_mapping order is critical!
+            for item in batch_info:
+                file_path = item['file_path']
+                seq_meta = item['sequence_metadata']
+                is_augmented = item.get('is_augmented', False)
+                augment_seed = seq_meta.get('augment_seed', None)
 
-            # Load data from H5 file
-            with h5py.File(full_path, 'r') as f:
-                file_sequences = []
-                file_labels = []
+                # Get full file path
+                if self.data_root:
+                    full_path = self.data_root / file_path
+                else:
+                    full_path = Path(file_path)
 
-                for seq_meta in sequences_metadata:
-                    sequence_idx = int(seq_meta['sequence_id'])
+                # Open file if not already cached
+                if file_path not in file_cache:
+                    file_cache[file_path] = h5py.File(full_path, 'r')
 
-                    # Load sequence: [seq_length, channels, height, width]
-                    sequence_data = f[self.dataset_key][sequence_idx]
-                    file_sequences.append(sequence_data)
+                f = file_cache[file_path]
+                sequence_idx = int(seq_meta['sequence_id'])
 
-                    # Load labels if available
-                    if 'label' in f:
-                        label_data = f['label'][sequence_idx]
-                        file_labels.append(label_data)
+                # Load sequence: [seq_length, channels, height, width] or [channels, height, width]
+                sequence_data = f[self.dataset_key][sequence_idx].copy()
 
-                # Stack sequences from this file
-                if file_sequences:
-                    file_batch = np.stack(file_sequences, axis=0)
-                    batch_sequences.append(file_batch)
+                # Apply augmentation if this is an augmented sample
+                if is_augmented and hasattr(self, 'augmenter') and self.augmenter is not None:
+                    # Set seed for reproducible augmentation
+                    if augment_seed is not None:
+                        np.random.seed(augment_seed)
+                    sequence_data = self.augmenter(sequence_data)
 
-                if file_labels:
-                    label_batch = np.stack(file_labels, axis=0)
-                    batch_labels.append(label_batch)
+                batch_sequences.append(sequence_data)
 
-        # Concatenate all sequences in the batch
-        if len(batch_sequences) == 1:
-            final_batch = batch_sequences[0]
-        elif len(batch_sequences) > 1:
-            final_batch = np.concatenate(batch_sequences, axis=0)
-        else:
-            # Empty batch - shouldn't happen but handle gracefully
+                # Load labels if available
+                if 'label' in f:
+                    label_data = f['label'][sequence_idx]
+                    batch_labels.append(label_data)
+
+        finally:
+            # Always close cached file handles
+            for f in file_cache.values():
+                f.close()
+
+        # Stack all sequences in the batch
+        if len(batch_sequences) == 0:
             return {'tokens': torch.empty(0), 'labels': torch.empty(0)}
 
-        # Concatenate labels
-        if len(batch_labels) == 1:
-            final_labels = batch_labels[0]
-        elif len(batch_labels) > 1:
-            final_labels = np.concatenate(batch_labels, axis=0)
+        final_batch = np.stack(batch_sequences, axis=0)
+
+        # Stack labels
+        if len(batch_labels) > 0:
+            final_labels = np.stack(batch_labels, axis=0)
         else:
             final_labels = None
 
@@ -604,37 +803,23 @@ class FilteredSplitH5Dataset(Dataset):
 
     def get_sample_weights(self):
         """
-        Compute sample weights for balanced sampling based on label distribution.
+        DEPRECATED: Use balance_classes=True in dataset config instead.
+
+        This method computed batch-level weights for WeightedRandomSampler,
+        but this approach is ineffective when all batches have similar class
+        distribution. The new approach uses balanced batch construction at
+        precompute time.
 
         Returns:
-            torch.Tensor: Weight for each batch (inverse frequency of dominant class)
+            torch.Tensor: Uniform weights (legacy compatibility)
         """
-        if 'label_logic' not in self.metadata.columns:
-            print("Warning: No label_logic column in metadata, returning uniform weights")
-            return torch.ones(len(self.batch_mapping))
-
-        # Count class frequencies across all samples
-        class_counts = self.metadata['label_logic'].value_counts().to_dict()
-        total_samples = len(self.metadata)
-
-        # Compute inverse frequency weights for each class
-        # Higher weight for less frequent classes
-        class_weights = {}
-        for cls, count in class_counts.items():
-            class_weights[cls] = total_samples / (len(class_counts) * count)
-
-        print(f"Class balancing weights: {class_weights}")
-
-        # Assign weight to each batch based on dominant class in batch
-        batch_weights = []
-        for batch_info in self.batch_mapping:
-            # Get labels for this batch
-            batch_labels = [item['sequence_metadata'].get('label_logic', 0) for item in batch_info]
-            # Use mean weight of samples in batch
-            batch_weight = np.mean([class_weights.get(lbl, 1.0) for lbl in batch_labels])
-            batch_weights.append(batch_weight)
-
-        return torch.tensor(batch_weights, dtype=torch.float32)
+        import warnings
+        warnings.warn(
+            "get_sample_weights() is deprecated. Use balance_classes=True "
+            "in dataset config for proper class balancing at batch construction time.",
+            DeprecationWarning
+        )
+        return torch.ones(len(self.batch_mapping))
 
     def get_class_weights(self):
         """
@@ -683,6 +868,10 @@ def create_filtered_split_datasets(
         global_label_filter=None,
         shuffle_experiments=True,
         shuffle_sequences=True,
+        # Class balancing parameters (only applied to train set)
+        balance_classes=False,
+        balance_strategy='oversample',
+        oversample_config=None,
         **kwargs):
     """
     Convenience function to create datasets with filtered splitting
@@ -693,6 +882,9 @@ def create_filtered_split_datasets(
         test_val_random_experiments: Number of experiments for random strategy
         test_val_multi_session: Prefer multi-session coverage in random strategy
         test_val_split_ratio: How to split filtered data (0.5 = 50% test, 50% val)
+        balance_classes: Enable class balancing for training set
+        balance_strategy: 'oversample' or 'undersample'
+        oversample_config: Configuration for oversampling method and augmentations
 
     Returns:
         Tuple of (train_dataset, test_dataset, val_dataset)
@@ -718,6 +910,9 @@ def create_filtered_split_datasets(
         'global_label_filter': global_label_filter,
         'shuffle_experiments': shuffle_experiments,
         'shuffle_sequences': shuffle_sequences,
+        'balance_classes': balance_classes,
+        'balance_strategy': balance_strategy,
+        'oversample_config': oversample_config,
         **kwargs
     }
 

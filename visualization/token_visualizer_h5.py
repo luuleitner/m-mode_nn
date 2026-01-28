@@ -11,12 +11,12 @@ Display layout:
 - Row 3: 3 US channel M-mode images
 
 Usage:
-    python visualization/token_visualizer.py
-    python visualization/token_visualizer.py --seed 42
-    python visualization/token_visualizer.py --data-path /path/to/processed/run_folder
-    python visualization/token_visualizer.py --config config/config.yaml
-    python visualization/token_visualizer.py --by-class              # Show one sample per label class (0, 1, 2)
-    python visualization/token_visualizer.py --by-class --seed 42    # Reproducible by-class visualization
+    python visualization/token_visualizer_h5.py
+    python visualization/token_visualizer_h5.py --seed 42
+    python visualization/token_visualizer_h5.py --data-path /path/to/processed/run_folder
+    python visualization/token_visualizer_h5.py --config config/config.yaml
+    python visualization/token_visualizer_h5.py --by-class              # Show one sample per label class (0, 1, 2)
+    python visualization/token_visualizer_h5.py --by-class --seed 42    # Reproducible by-class visualization
 
 Options:
     -d, --data-path   Path to processed data folder (run_YYYYMMDD_HHMMSS or 'latest')

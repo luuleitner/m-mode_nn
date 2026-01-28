@@ -9,10 +9,10 @@ Uses Plotly for interactive zooming. Displays:
 - Raw vs Processed comparison for all 3 US channels
 
 Usage:
-    python visualization/data_visualization.py
-    python visualization/data_visualization.py --seed 42
-    python visualization/data_visualization.py --exp-path /path/to/session/experiment
-    python visualization/data_visualization.py --config config/config.yaml
+    python visualization/data_visualization_raw-processed.py
+    python visualization/data_visualization_raw-processed.py --seed 42
+    python visualization/data_visualization_raw-processed.py --exp-path /path/to/session/experiment
+    python visualization/data_visualization_raw-processed.py --config config/config.yaml
 
 Options:
     --config      Path to config.yaml (default: config/config.yaml)
