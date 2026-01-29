@@ -157,9 +157,16 @@ def extract_embeddings_from_loader(
 
             # Convert soft labels to hard labels if needed
             if labels is not None:
-                if labels.dim() > 1:  # Soft labels: [B, num_classes]
+                # Soft labels have shape [B, num_classes] where num_classes > 1
+                # Hard labels have shape [B] or [B, 1]
+                if labels.dim() > 1 and labels.shape[-1] > 1:
+                    # Soft labels: [B, num_classes] -> argmax to get dominant class
                     hard_labels = labels.argmax(dim=1).numpy()
-                else:  # Already hard labels
+                elif labels.dim() > 1:
+                    # Hard labels with shape [B, 1] -> squeeze
+                    hard_labels = labels.squeeze(-1).numpy()
+                else:
+                    # Already hard labels with shape [B]
                     hard_labels = labels.numpy()
                 all_labels.append(hard_labels)
 

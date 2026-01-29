@@ -182,8 +182,12 @@ def extract_embeddings(
             all_embeddings.append(embeddings.cpu().numpy())
 
             # Convert soft labels to hard labels
-            if labels.dim() > 1:
+            # Soft labels: [B, num_classes] where num_classes > 1
+            # Hard labels: [B] or [B, 1]
+            if labels.dim() > 1 and labels.shape[-1] > 1:
                 hard_labels = labels.argmax(dim=1).numpy()
+            elif labels.dim() > 1:
+                hard_labels = labels.squeeze(-1).numpy()
             else:
                 hard_labels = labels.numpy()
             all_labels.append(hard_labels)

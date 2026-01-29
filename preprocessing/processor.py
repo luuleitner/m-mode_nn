@@ -621,7 +621,16 @@ class DataProcessor():
 
 
     def _signal_processing(self, data):
-        
+
+        # Clipping
+        if self._clip_flag:
+            clip_end = data.shape[1] - self._clip_samples2remove_end
+            data = data[:, self._clip_samples2remove_start:clip_end, :]
+
+        # Time Gain Compensation (TGC)
+        if self._tgc_flag:
+            data = Time_Gain_Compensation(data, freq=self._tgc_fs, coef_att=self._tgc_coef_att)
+
         # Bandpass Filtering
         if self._bandpass_flag:
             data = butter_bandpass_filter(data,
@@ -630,15 +639,6 @@ class DataProcessor():
                                           highcut=self._bandpass_highcut,
                                           fs=self._bandpass_fs,
                                           order=self._bandpass_order)
-        
-        # Time Gain Compensation (TGC)
-        if self._tgc_flag:
-            data = Time_Gain_Compensation(data, freq=self._tgc_fs, coef_att=self._tgc_coef_att)
-        
-        # Clipping
-        if self._clip_flag:
-            clip_end = data.shape[1] - self._clip_samples2remove_end
-            data = data[:, self._clip_samples2remove_start:clip_end, :]
 
         #---Envelope
         if self._envelope_flag:
@@ -653,8 +653,6 @@ class DataProcessor():
         #---Logcompression
         if self._logcompression_flag:
             data = logcompression(data, self._logcompression_dbrange)
-
-
 
         #---Normalization
         if self._normalization_flag:
