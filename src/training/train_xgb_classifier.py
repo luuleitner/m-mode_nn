@@ -104,27 +104,31 @@ def get_classifier_config(config) -> dict:
         xgb_cfg = config.ml.classifier.xgboost
         logger.info("Loading XGBoost configuration from config file")
         return {
-            'n_estimators': getattr(xgb_cfg, 'n_estimators', 500),
+            'n_estimators': getattr(xgb_cfg, 'n_estimators', 300),
             'max_depth': getattr(xgb_cfg, 'max_depth', 6),
-            'learning_rate': getattr(xgb_cfg, 'learning_rate', 0.1),
+            'learning_rate': getattr(xgb_cfg, 'learning_rate', 0.05),
             'subsample': getattr(xgb_cfg, 'subsample', 0.8),
             'colsample_bytree': getattr(xgb_cfg, 'colsample_bytree', 0.8),
-            'reg_alpha': getattr(xgb_cfg, 'reg_alpha', 0.0),
+            'reg_alpha': getattr(xgb_cfg, 'reg_alpha', 0.1),
             'reg_lambda': getattr(xgb_cfg, 'reg_lambda', 1.0),
-            'early_stopping_rounds': getattr(xgb_cfg, 'early_stopping_rounds', 50),
+            'min_child_weight': getattr(xgb_cfg, 'min_child_weight', 3),
+            'gamma': getattr(xgb_cfg, 'gamma', 0.1),
+            'early_stopping_rounds': getattr(xgb_cfg, 'early_stopping_rounds', 30),
         }
     else:
         # Default configuration
         logger.warning("Classifier config not found in config.ml.classifier, using defaults")
         return {
-            'n_estimators': 500,
+            'n_estimators': 300,
             'max_depth': 6,
-            'learning_rate': 0.1,
+            'learning_rate': 0.05,
             'subsample': 0.8,
             'colsample_bytree': 0.8,
-            'reg_alpha': 0.0,
+            'reg_alpha': 0.1,
             'reg_lambda': 1.0,
-            'early_stopping_rounds': 50,
+            'min_child_weight': 3,
+            'gamma': 0.1,
+            'early_stopping_rounds': 30,
         }
 
 
@@ -138,6 +142,8 @@ def create_classifier(xgb_config: dict, seed: int = 42) -> XGBClassifier:
         colsample_bytree=xgb_config['colsample_bytree'],
         reg_alpha=xgb_config['reg_alpha'],
         reg_lambda=xgb_config['reg_lambda'],
+        min_child_weight=xgb_config.get('min_child_weight', 3),
+        gamma=xgb_config.get('gamma', 0.1),
         objective='multi:softprob',
         num_class=3,
         eval_metric='mlogloss',
