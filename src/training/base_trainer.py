@@ -304,6 +304,11 @@ class BaseTrainer:
                 f"MSE={avg_val_mse:.4f}, LR={current_lr:.2e}"
             )
 
+            # Check for early stopping
+            if self.callbacks.stop_training:
+                logger.info(f"Early stopping at epoch {epoch + 1}")
+                break
+
         self.callbacks.on_train_end({
             'epoch': epochs - 1,
             'val_loss': self.history['val_loss'][-1] if self.history['val_loss'] else None

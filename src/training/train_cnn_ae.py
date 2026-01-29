@@ -30,7 +30,8 @@ from src.training.adapters import CNNAdapter
 from src.training.callbacks import (
     CheckpointCallback,
     VisualizationCallback,
-    WandBCallback
+    WandBCallback,
+    EarlyStoppingCallback
 )
 
 import utils.logging_config as logconf
@@ -40,6 +41,8 @@ logger = logconf.get_logger("TRAIN")
 def create_model(config):
     """Create model based on config."""
     model_type = config.ml.model.type
+    reg_config = config.get_regularization_config()
+    use_batchnorm = reg_config.get('batch_norm', True)
 
     if model_type == "CNNAutoencoder":
         from src.models.cnn_ae import CNNAutoencoder
@@ -50,7 +53,7 @@ def create_model(config):
             input_width=config.preprocess.tokenization.window,
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
-            use_batchnorm=True
+            use_batchnorm=use_batchnorm
         )
     elif model_type == "UNetAutoencoder":
         from src.models.unet_ae import UNetAutoencoder
@@ -61,7 +64,7 @@ def create_model(config):
             input_width=config.preprocess.tokenization.window,
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
-            use_batchnorm=True
+            use_batchnorm=use_batchnorm
         )
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
@@ -124,6 +127,15 @@ def create_callbacks(config, results_dir, test_loader=None):
             config=wandb_config,
             name=config.wandb.name,
             save_dir=results_dir
+        ))
+
+    # Early stopping callback
+    early_stop_config = getattr(config.ml.training, 'early_stopping', None)
+    if early_stop_config and getattr(early_stop_config, 'enabled', False):
+        callbacks.append(EarlyStoppingCallback(
+            patience=getattr(early_stop_config, 'patience', 20),
+            min_delta=getattr(early_stop_config, 'min_delta', 1e-5),
+            monitor=getattr(early_stop_config, 'monitor', 'val_loss')
         ))
 
     return callbacks

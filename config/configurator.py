@@ -182,13 +182,11 @@ class ConfigurationManager:
             reg = self.ml.training.regularization
             return {
                 'grad_clip_norm': getattr(reg, 'grad_clip_norm', 1.0),
-                'dropout_rate': getattr(reg, 'dropout_rate', 0.0),
                 'batch_norm': getattr(reg, 'batch_norm', True)
             }
         else:
             return {
                 'grad_clip_norm': 1.0,
-                'dropout_rate': 0.0,
                 'batch_norm': True
             }
 
@@ -486,7 +484,7 @@ def print_config_summary(config: ConfigurationManager):
     print(f"\n🔧 REGULARIZATION:")
     reg_config = config.get_regularization_config()
     print(f"  Grad Clip Norm: {reg_config['grad_clip_norm']}")
-    print(f"  Dropout Rate: {reg_config['dropout_rate']}")
+    print(f"  Batch Norm: {reg_config['batch_norm']}")
 
     print(f"\n🔄 RESTART:")
     restart = config.get_restart_config()

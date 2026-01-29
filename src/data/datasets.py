@@ -186,11 +186,21 @@ class FilteredSplitH5Dataset(Dataset):
             if test_val_random_experiments is None or test_val_random_experiments <= 0:
                 raise ValueError("strategy='random' requires test_val_random_experiments > 0")
 
-            if not suppress_metadata_print:
-                print(f"Using RANDOM strategy: selecting {test_val_random_experiments} experiments")
+            # Support percentage (0 < value < 1) or absolute count (>= 1)
+            total_experiments = all_data['file_path'].nunique()
+            if 0 < test_val_random_experiments < 1:
+                # Interpret as percentage
+                num_experiments = max(1, int(total_experiments * test_val_random_experiments))
+                if not suppress_metadata_print:
+                    print(f"Using RANDOM strategy: selecting {test_val_random_experiments:.0%} = {num_experiments} experiments (of {total_experiments})")
+            else:
+                # Interpret as absolute count
+                num_experiments = int(test_val_random_experiments)
+                if not suppress_metadata_print:
+                    print(f"Using RANDOM strategy: selecting {num_experiments} experiments")
 
             test_val_candidates = self._select_random_experiments(
-                all_data, test_val_random_experiments, test_val_multi_session,
+                all_data, num_experiments, test_val_multi_session,
                 suppress_print=suppress_metadata_print
             )
 
