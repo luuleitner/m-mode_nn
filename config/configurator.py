@@ -109,14 +109,16 @@ class ConfigurationManager:
             return {
                 'mse_weight': getattr(lw, 'mse_weight', 0.8),
                 'l1_weight': getattr(lw, 'l1_weight', 0.2),
-                'embedding_reg': getattr(lw, 'embedding_reg', 0.001)
+                'embedding_reg': getattr(lw, 'embedding_reg', 0.001),
+                'classification_weight': getattr(lw, 'classification_weight', 0.0)
             }
         else:
             # Return defaults if not in config
             return {
                 'mse_weight': 0.8,
                 'l1_weight': 0.2,
-                'embedding_reg': 0.001
+                'embedding_reg': 0.001,
+                'classification_weight': 0.0
             }
 
     def get_restart_config(self) -> Dict[str, Any]:
