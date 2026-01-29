@@ -7,9 +7,9 @@
 #   2. Train two-stage classifier on embeddings
 #
 # Usage:
-#   ./scripts/run_two_stage_pipeline.sh --config config/config.yaml --checkpoint path/to/model.pth
-#   ./scripts/run_two_stage_pipeline.sh --config config/config.yaml --checkpoint path/to/model.pth --target-recall 0.90
-#   ./scripts/run_two_stage_pipeline.sh --config config/config.yaml --checkpoint path/to/model.pth --tune
+#   ./scripts/run_stage2_CLS2stage_pipeline.sh --config config/config.yaml --checkpoint path/to/model.pth
+#   ./scripts/run_stage2_CLS2stage_pipeline.sh --config config/config.yaml --checkpoint path/to/model.pth --target-recall 0.90
+#   ./scripts/run_stage2_CLS2stage_pipeline.sh --config config/config.yaml --checkpoint path/to/model.pth --tune
 #
 
 set -e  # Exit on error

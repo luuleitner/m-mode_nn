@@ -130,8 +130,12 @@ def plot_reconstructions(
             recon, _ = model(data)
 
             # Convert soft labels to hard
-            if labels.dim() > 1:
+            # Soft labels: [B, num_classes] where num_classes > 1
+            # Hard labels: [B] or [B, 1]
+            if labels.dim() > 1 and labels.shape[-1] > 1:
                 hard_labels = labels.argmax(dim=1)
+            elif labels.dim() > 1:
+                hard_labels = labels.squeeze(-1)
             else:
                 hard_labels = labels
 

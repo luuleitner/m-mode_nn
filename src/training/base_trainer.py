@@ -43,7 +43,8 @@ class BaseTrainer:
         self.scheduler = None
         self.history = {
             'train_loss': [],
-            'val_loss': [],
+            'val_loss': [],           # Weighted (consistent with training)
+            'val_loss_unweighted': [], # Unweighted (true reconstruction quality)
             'val_mse': [],
             'learning_rates': []
         }
@@ -117,11 +118,18 @@ class BaseTrainer:
         # Apply class-weighted loss if labels and class_weights are provided
         if labels is not None and class_weights is not None:
             # Get hard labels from soft labels (argmax)
-            if labels.dim() > 1:
+            # Soft labels have shape [B, num_classes] where num_classes > 1
+            # Hard labels have shape [B] or [B, 1]
+            if labels.dim() > 1 and labels.shape[-1] > 1:
+                # Soft labels: [B, num_classes] -> argmax to get dominant class
                 hard_labels = labels.argmax(dim=-1)  # [B] or [B, seq_len]
                 if hard_labels.dim() > 1:
                     hard_labels = hard_labels[:, 0]  # Take first in sequence for batch weight
+            elif labels.dim() > 1:
+                # Hard labels with shape [B, 1] -> squeeze
+                hard_labels = labels.squeeze(-1)
             else:
+                # Hard labels with shape [B]
                 hard_labels = labels
 
             # Compute per-sample weights based on class
@@ -189,10 +197,19 @@ class BaseTrainer:
 
         return total_loss / len(train_loader)
 
-    def validate_epoch(self, val_loader, epoch):
-        """Validate for one epoch. Returns (avg_loss, avg_mse)."""
+    def validate_epoch(self, val_loader, epoch, loss_weights=None):
+        """
+        Validate for one epoch.
+
+        Returns:
+            tuple: (avg_weighted_loss, avg_mse, avg_unweighted_loss)
+                - avg_weighted_loss: Loss with class weighting (consistent with training)
+                - avg_mse: Pure MSE reconstruction error
+                - avg_unweighted_loss: Loss without class weighting (true reconstruction quality)
+        """
         self.model.eval()
-        total_loss = 0
+        total_weighted_loss = 0
+        total_unweighted_loss = 0
         total_mse = 0
 
         with torch.no_grad():
@@ -200,13 +217,28 @@ class BaseTrainer:
                 data, labels = self.adapter.prepare_batch(batch, self.device)
                 reconstruction, embedding = self.model(data)
 
-                _, loss_dict = self.compute_loss(reconstruction, data, embedding)
+                # Weighted loss (consistent with training objective)
+                _, weighted_dict = self.compute_loss(
+                    reconstruction, data, embedding, labels, loss_weights
+                )
+
+                # Unweighted loss (true reconstruction quality across all classes)
+                _, unweighted_dict = self.compute_loss(
+                    reconstruction, data, embedding
+                )
+
                 mse = F.mse_loss(reconstruction, data)
 
-                total_loss += loss_dict['total_loss']
+                total_weighted_loss += weighted_dict['total_loss']
+                total_unweighted_loss += unweighted_dict['total_loss']
                 total_mse += mse.item()
 
-        return total_loss / len(val_loader), total_mse / len(val_loader)
+        n_batches = len(val_loader)
+        return (
+            total_weighted_loss / n_batches,
+            total_mse / n_batches,
+            total_unweighted_loss / n_batches
+        )
 
     def fit(self, train_loader, val_loader, epochs=100, learning_rate=1e-3, weight_decay=1e-4,
             optimizer_type='adamw', scheduler_type='plateau', loss_weights=None,
@@ -238,9 +270,11 @@ class BaseTrainer:
             self.callbacks.on_epoch_begin(epoch)
 
             avg_train_loss = self.train_epoch(train_loader, epoch, loss_weights, grad_clip_norm)
-            avg_val_loss, avg_val_mse = self.validate_epoch(val_loader, epoch)
+            avg_val_loss, avg_val_mse, avg_val_loss_unweighted = self.validate_epoch(
+                val_loader, epoch, loss_weights
+            )
 
-            # Update scheduler
+            # Update scheduler (use weighted val loss for consistency with training)
             if self.scheduler:
                 if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(avg_val_loss)
@@ -251,12 +285,14 @@ class BaseTrainer:
             current_lr = self.optimizer.param_groups[0]['lr']
             self.history['train_loss'].append(avg_train_loss)
             self.history['val_loss'].append(avg_val_loss)
+            self.history['val_loss_unweighted'].append(avg_val_loss_unweighted)
             self.history['val_mse'].append(avg_val_mse)
             self.history['learning_rates'].append(current_lr)
 
             self.callbacks.on_epoch_end(epoch, {
                 'train_loss': avg_train_loss,
                 'val_loss': avg_val_loss,
+                'val_loss_unweighted': avg_val_loss_unweighted,
                 'val_mse': avg_val_mse,
                 'learning_rate': current_lr,
                 'epoch': epoch
@@ -264,7 +300,7 @@ class BaseTrainer:
 
             logger.info(
                 f"Epoch {epoch + 1}/{epochs}: "
-                f"Train={avg_train_loss:.4f}, Val={avg_val_loss:.4f}, "
+                f"Train={avg_train_loss:.4f}, Val={avg_val_loss:.4f} (unw={avg_val_loss_unweighted:.4f}), "
                 f"MSE={avg_val_mse:.4f}, LR={current_lr:.2e}"
             )
 

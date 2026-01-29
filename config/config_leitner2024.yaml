@@ -17,9 +17,9 @@ global_setting:
         seed: &global_seed 353
 
   paths:
-    base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato"
-    process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/processed/Dataset_Envelope_CNN/Window18_Stride02_Labels_soft/latest"
+    base_data_path: &base_data_path "/vol/data/2025_wristus_wiicontroller_leitner"
+    process_base_data_path: &process_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed"
+    train_base_data_path: &train_base_data_path "/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_CNN/Window18_Stride02_Labels_soft/latest"
 
 # ========================================
 # ML PIPELINE CONFIGURATION
@@ -246,7 +246,7 @@ preprocess:
   data:
     basepath: *base_data_path
     id: "Dataset_Envelope_CNN"
-    strategy: "all"                   # all | selection_file
+    strategy: "selection_file"                   # all | selection_file
     selection_file: "config/preprocessing_selection.csv"   # Used when strategy=selection_file (run utils/generate_selection.py)
     save_ftype: "h5"                  # h5, zarr
 

@@ -69,8 +69,12 @@ class VisualizationCallback(Callback):
         epochs_range = range(1, len(history['train_loss']) + 1)
 
         # Loss curves
-        axes[0, 0].plot(epochs_range, history['train_loss'], 'b-', label='Training', linewidth=2)
-        axes[0, 0].plot(epochs_range, history['val_loss'], 'r-', label='Validation', linewidth=2)
+        axes[0, 0].plot(epochs_range, history['train_loss'], 'b-', label='Train (weighted)', linewidth=2)
+        axes[0, 0].plot(epochs_range, history['val_loss'], 'r-', label='Val (weighted)', linewidth=2)
+        # Plot unweighted validation loss if available
+        if 'val_loss_unweighted' in history and history['val_loss_unweighted']:
+            axes[0, 0].plot(epochs_range, history['val_loss_unweighted'], 'r--',
+                          label='Val (unweighted)', linewidth=1.5, alpha=0.7)
         axes[0, 0].set_xlabel('Epoch')
         axes[0, 0].set_ylabel('Loss')
         axes[0, 0].set_title('Training Progress')
