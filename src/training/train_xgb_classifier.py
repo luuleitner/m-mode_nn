@@ -16,6 +16,7 @@ from datetime import datetime
 
 import numpy as np
 from xgboost import XGBClassifier
+from sklearn.utils.class_weight import compute_sample_weight, compute_class_weight
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -36,6 +37,30 @@ logger = logconf.get_logger("CLASSIFIER")
 
 # Default class names for the 3-class problem
 CLASS_NAMES = ['noise', 'upward', 'downward']
+
+
+def compute_balanced_sample_weights(y: np.ndarray) -> np.ndarray:
+    """
+    Compute sample weights to handle class imbalance.
+
+    Uses inverse class frequency so minority classes get higher weights.
+    This helps XGBoost pay more attention to minority classes.
+
+    Args:
+        y: Label array
+
+    Returns:
+        Array of sample weights (same length as y)
+    """
+    sample_weights = compute_sample_weight('balanced', y)
+
+    # Log class weights for transparency
+    classes = np.unique(y)
+    class_weights = compute_class_weight('balanced', classes=classes, y=y)
+    weight_dict = {int(c): w for c, w in zip(classes, class_weights)}
+    logger.info(f"Class weights (inverse frequency): {weight_dict}")
+
+    return sample_weights
 
 
 def load_embeddings(embeddings_path: str) -> dict:
@@ -66,9 +91,10 @@ def load_embeddings(embeddings_path: str) -> dict:
 
 def get_classifier_config(config) -> dict:
     """Get XGBoost configuration from config or use defaults."""
-    # Check if classifier config exists
-    if hasattr(config, 'classifier') and hasattr(config.classifier, 'xgboost'):
-        xgb_cfg = config.classifier.xgboost
+    # Check if classifier config exists (nested under ml section)
+    if hasattr(config.ml, 'classifier') and hasattr(config.ml.classifier, 'xgboost'):
+        xgb_cfg = config.ml.classifier.xgboost
+        logger.info("Loading XGBoost configuration from config file")
         return {
             'n_estimators': getattr(xgb_cfg, 'n_estimators', 500),
             'max_depth': getattr(xgb_cfg, 'max_depth', 6),
@@ -81,7 +107,7 @@ def get_classifier_config(config) -> dict:
         }
     else:
         # Default configuration
-        logger.info("Using default XGBoost configuration")
+        logger.warning("Classifier config not found in config.ml.classifier, using defaults")
         return {
             'n_estimators': 500,
             'max_depth': 6,
@@ -121,14 +147,28 @@ def train_classifier(
     y_train: np.ndarray,
     X_val: np.ndarray,
     y_val: np.ndarray,
+    sample_weight: np.ndarray = None,
     early_stopping_rounds: int = 50
 ) -> XGBClassifier:
-    """Train XGBoost classifier with early stopping."""
+    """
+    Train XGBoost classifier with early stopping and optional sample weighting.
+
+    Args:
+        clf: XGBClassifier instance
+        X_train, y_train: Training data
+        X_val, y_val: Validation data
+        sample_weight: Optional per-sample weights for handling class imbalance
+        early_stopping_rounds: Stop if no improvement for N rounds
+    """
     logger.info("Training XGBoost classifier...")
     logger.info(f"Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
 
+    if sample_weight is not None:
+        logger.info("Using sample weights for class balancing")
+
     clf.fit(
         X_train, y_train,
+        sample_weight=sample_weight,
         eval_set=[(X_train, y_train), (X_val, y_val)],
         verbose=True
     )
@@ -278,6 +318,9 @@ def hyperparameter_search(
 
     logger.info(f"Starting hyperparameter search with {n_trials} trials...")
 
+    # Compute sample weights for balanced training
+    sample_weights = compute_balanced_sample_weights(y_train)
+
     def objective(trial):
         params = {
             'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
@@ -302,6 +345,7 @@ def hyperparameter_search(
 
         clf.fit(
             X_train, y_train,
+            sample_weight=sample_weights,
             eval_set=[(X_val, y_val)],
             verbose=False
         )
@@ -352,8 +396,12 @@ def main(
     logger.info("=" * 60)
 
     # Setup output directory
+    # Classifier results go in the training run folder (sibling to embeddings folder)
+    # e.g., .../training_20260129_002037/classifier/
     if output_dir is None:
-        output_dir = os.path.join(os.path.dirname(embeddings_path), 'classifier')
+        embeddings_dir = os.path.dirname(embeddings_path)  # .../embeddings/
+        run_dir = os.path.dirname(embeddings_dir)          # .../training_YYYYMMDD_HHMMSS/
+        output_dir = os.path.join(run_dir, 'classifier')
     os.makedirs(output_dir, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
 
@@ -374,10 +422,15 @@ def main(
 
     logger.info(f"XGBoost config: {xgb_config}")
 
+    # Compute sample weights for class balancing
+    # This helps XGBoost pay more attention to minority classes (upward/downward movements)
+    sample_weights = compute_balanced_sample_weights(y_train)
+
     # Create and train classifier
     clf = create_classifier(xgb_config, seed=seed)
     clf = train_classifier(
         clf, X_train, y_train, X_val, y_val,
+        sample_weight=sample_weights,
         early_stopping_rounds=xgb_config.get('early_stopping_rounds', 50)
     )
 

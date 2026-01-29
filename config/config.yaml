@@ -137,9 +137,9 @@ ml:
 
   # Model Architecture
   model:
-    type: "CNNAutoencoder"            # "CNNAutoencoder", "TransformerAutoencoder", "HybridTransformerAutoencoder"
-    channels_per_layer: [16, 32, 64]
-    embedding_dim: 256                # Single value or list for progressive dims
+    type: "UNetAutoencoder"           # "CNNAutoencoder", "UNetAutoencoder", "TransformerAutoencoder"
+    channels_per_layer: [32, 64, 128, 256]  # 4 levels for U-Net
+    embedding_dim: 512                # Less aggressive compression
     num_heads: 8                   # For transformer models
     num_layers: 4                  # For transformer models
 
@@ -152,14 +152,14 @@ ml:
 
     # XGBoost hyperparameters
     xgboost:
-      n_estimators: 500
+      n_estimators: 50
       max_depth: 6
       learning_rate: 0.1
       subsample: 0.8
       colsample_bytree: 0.8
       reg_alpha: 0.0
       reg_lambda: 1.0
-      early_stopping_rounds: 50
+      early_stopping_rounds: 20
 
     # Embedding preprocessing
     preprocessing:
@@ -172,11 +172,24 @@ ml:
       method: "optuna"                # optuna | grid | random
       n_trials: 50
 
+  # =====================================================================
+  # CNN CLASSIFIER CONFIGURATION (end-to-end classification)
+  # =====================================================================
+  # Alternative to AE + XGBoost: direct CNN classification
+  # Run with: python -m src.training.train_cnn_classifier --config config/config.yaml
+  classifier_cnn:
+    channels: [32, 64, 128, 256]      # Encoder channels (same as UNet)
+    hidden_dim: 256                    # Classification head hidden dimension
+    num_classes: 3                     # noise, upward, downward
+    dropout: 0.5                       # Dropout rate for regularization
+    epochs: 100                        # Training epochs
+    learning_rate: 0.0001              # Learning rate
+
   # Training Configuration
   training:
     # Basic Training Parameters
-    epochs: 50
-    lr: 0.0003
+    epochs: 150
+    lr: 0.0001
     weight_decay: 1e-4
 
     # Optimizer Configuration
@@ -188,7 +201,7 @@ ml:
 
     # Learning Rate Scheduler
     lr_scheduler:
-      type: "plateau"                 # plateau, onecycle, cosine, step, none
+      type: "cosine"                  # plateau, onecycle, cosine, step, none
       factor: 0.5                    # ReduceLROnPlateau factor
       patience: 10                   # ReduceLROnPlateau patience
       threshold: 1e-4                # ReduceLROnPlateau threshold
@@ -196,9 +209,9 @@ ml:
 
     # Loss Configuration
     loss_weights:
-      mse_weight: 0.8
-      l1_weight: 0.2
-      embedding_reg: 0.001
+      mse_weight: 0.5
+      l1_weight: 0.5                  # More L1 = sharper reconstructions
+      embedding_reg: 0.0005
 
     # Training Regularization
     regularization:

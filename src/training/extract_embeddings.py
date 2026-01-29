@@ -25,7 +25,6 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, project_root)
 
 from config.configurator import load_config, setup_environment
-from src.data.datasets import create_filtered_split_datasets
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("EXTRACT")
@@ -39,6 +38,17 @@ def create_model(config):
         from src.models.cnn_ae import CNNAutoencoder
 
         model = CNNAutoencoder(
+            in_channels=3,
+            input_height=130,
+            input_width=config.preprocess.tokenization.window,
+            channels=config.ml.model.channels_per_layer,
+            embedding_dim=config.ml.model.embedding_dim,
+            use_batchnorm=True
+        )
+    elif model_type == "UNetAutoencoder":
+        from src.models.unet_ae import UNetAutoencoder
+
+        model = UNetAutoencoder(
             in_channels=3,
             input_height=130,
             input_width=config.preprocess.tokenization.window,
@@ -72,26 +82,35 @@ def load_checkpoint(checkpoint_path: str, model: torch.nn.Module, device: str):
     return model
 
 
-def load_or_create_datasets(config):
-    """Load datasets from pickle or create new."""
+def load_datasets_from_pickle(config):
+    """
+    Always load datasets from pickle files created during AE training.
+
+    This ensures embedding extraction uses the exact same data splits
+    as autoencoder training, regardless of the load_data_pickle config setting.
+    """
     pickle_path = config.get_train_data_root()
     train_path = os.path.join(pickle_path, 'train_ds.pkl')
     val_path = os.path.join(pickle_path, 'val_ds.pkl')
     test_path = os.path.join(pickle_path, 'test_ds.pkl')
 
-    if config.ml.loading.load_data_pickle:
-        logger.info("Loading datasets from pickle...")
-        with open(train_path, 'rb') as f:
-            train_ds = pickle.load(f)
-        with open(val_path, 'rb') as f:
-            val_ds = pickle.load(f)
-        with open(test_path, 'rb') as f:
-            test_ds = pickle.load(f)
-    else:
-        logger.info("Creating datasets from metadata...")
-        train_ds, test_ds, val_ds = create_filtered_split_datasets(
-            **config.get_dataset_parameters()
-        )
+    # Verify pickle files exist
+    for path, name in [(train_path, 'train'), (val_path, 'val'), (test_path, 'test')]:
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"{name} pickle not found at {path}. "
+                f"Run AE training first to create dataset pickles."
+            )
+
+    logger.info(f"Loading datasets from pickle (AE training splits)...")
+    logger.info(f"Pickle path: {pickle_path}")
+
+    with open(train_path, 'rb') as f:
+        train_ds = pickle.load(f)
+    with open(val_path, 'rb') as f:
+        val_ds = pickle.load(f)
+    with open(test_path, 'rb') as f:
+        test_ds = pickle.load(f)
 
     logger.info(f"Train samples: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
     return train_ds, val_ds, test_ds
@@ -176,8 +195,8 @@ def main(config_path: str, checkpoint_path: str, output_dir: str = None, normali
     os.makedirs(output_dir, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
 
-    # Load datasets
-    train_ds, val_ds, test_ds = load_or_create_datasets(config)
+    # Load datasets from pickle (always use AE training splits)
+    train_ds, val_ds, test_ds = load_datasets_from_pickle(config)
 
     # Create dataloaders (no shuffling for extraction)
     resource_config = config.get_resource_config()
