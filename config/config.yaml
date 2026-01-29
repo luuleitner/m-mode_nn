@@ -71,7 +71,7 @@ preprocess:
     tokens2file: true
     startendID: false
     window: 10
-    stride: 2
+    stride: 5
     description: "Specifies the tokenization process."
 
   sequencing:
@@ -174,11 +174,10 @@ ml:
     # =========================================
     # STEP 5: CLASS BALANCING (train set only)
     # =========================================
-    # Balances class distribution by oversampling minority classes.
-    # Majority class (0) appears exactly once, minority classes (1, 2)
-    # are oversampled with augmentation to match majority count.
-    balance_classes: true                   # Enable balanced batch construction
-    balance_strategy: "oversample"          # oversample | undersample
+    # Two options: dataset-level (oversampling) OR loss-level (weighted loss)
+    # For joint AE+classification: use weighted loss to preserve real 90/5/5 distribution
+    balance_classes: false                  # Disabled: using weighted loss instead
+    balance_strategy: "oversample"          # (unused when balance_classes=false)
 
     oversample_config:
       method: "augment"                     # duplicate | augment | mixed
@@ -258,9 +257,10 @@ ml:
 
     # Loss Configuration
     loss_weights:
-      mse_weight: 0.5
-      l1_weight: 0.5                  # More L1 = sharper reconstructions
+      mse_weight: 0.3
+      l1_weight: 0.3                  # More L1 = sharper reconstructions
       embedding_reg: 0.0005
+      classification_weight: 0.4     # Joint classification loss (balanced with reconstruction)
 
     # Training Regularization
     regularization:

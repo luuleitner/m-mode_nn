@@ -5,10 +5,14 @@ A vanilla U-Net architecture with skip connections for better reconstruction qua
 Preserves fine details through concatenation-based skip connections.
 
 Input format: [Batch, US_Channels, Depth, Pulses] = [B, 3, 130, 18]
+
+Supports optional classification head for joint reconstruction + classification training.
 """
 
 import torch
 import torch.nn as nn
+
+from .cnn_ae import ClassificationHead
 
 
 class EncoderBlock(nn.Module):
@@ -103,6 +107,8 @@ class UNetAutoencoder(nn.Module):
         channels: List of channel sizes for encoder levels (default: [32, 64, 128, 256])
         embedding_dim: Size of bottleneck embedding (default: 512)
         use_batchnorm: Whether to use batch normalization (default: True)
+        num_classes: Number of classes for classification head (default: 3, set to 0 to disable)
+        classifier_dropout: Dropout rate for classification head (default: 0.3)
     """
 
     def __init__(
@@ -113,6 +119,8 @@ class UNetAutoencoder(nn.Module):
         channels: list = None,
         embedding_dim: int = 512,
         use_batchnorm: bool = True,
+        num_classes: int = 3,
+        classifier_dropout: float = 0.3,
     ):
         super().__init__()
 
@@ -126,6 +134,7 @@ class UNetAutoencoder(nn.Module):
         self.embedding_dim = embedding_dim
         self.use_batchnorm = use_batchnorm
         self.num_levels = len(channels)
+        self.num_classes = num_classes
 
         # Build encoder blocks
         self.encoder_blocks = nn.ModuleList()
@@ -160,6 +169,14 @@ class UNetAutoencoder(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
         )
         self.final_conv = nn.Conv2d(channels[0], in_channels, kernel_size=3, stride=1, padding=1)
+
+        # Classification head (optional)
+        if num_classes > 0:
+            self.classifier = ClassificationHead(
+                embedding_dim, num_classes, dropout=classifier_dropout
+            )
+        else:
+            self.classifier = None
 
     def _get_bottleneck_size(self):
         """Calculate spatial size at bottleneck after all encoder blocks."""
@@ -249,12 +266,21 @@ class UNetAutoencoder(nn.Module):
 
     def forward(self, x):
         """
-        Forward pass returning (reconstruction, embedding).
+        Forward pass.
 
         Uses skip connections for best reconstruction quality.
+
+        Returns:
+            If classifier enabled: (reconstruction, embedding, logits)
+            If classifier disabled: (reconstruction, embedding)
         """
         embedding, skips = self.encode_with_skips(x)
         reconstruction = self.decode(embedding, skips)
+
+        if self.classifier is not None:
+            logits = self.classifier(embedding)
+            return reconstruction, embedding, logits
+
         return reconstruction, embedding
 
     def get_num_parameters(self):
@@ -264,7 +290,7 @@ class UNetAutoencoder(nn.Module):
 
 # Quick test
 if __name__ == "__main__":
-    # Test with default config
+    # Test with default config (classification enabled)
     model = UNetAutoencoder()
     print(f"Model parameters: {model.get_num_parameters():,}")
     print(f"Channels: {model.channels}")
@@ -273,10 +299,11 @@ if __name__ == "__main__":
 
     # Test forward pass
     x = torch.randn(4, 3, 130, 18)
-    recon, emb = model(x)
+    recon, emb, logits = model(x)
     print(f"\nInput:          {x.shape}")
     print(f"Embedding:      {emb.shape}")
     print(f"Reconstruction: {recon.shape}")
+    print(f"Logits:         {logits.shape}")
 
     # Test encode only
     emb_only = model.encode(x)
@@ -284,4 +311,12 @@ if __name__ == "__main__":
 
     # Verify reconstruction matches input size
     assert recon.shape == x.shape, f"Shape mismatch: {recon.shape} vs {x.shape}"
+
+    # Test without classification head
+    model2 = UNetAutoencoder(num_classes=0)
+    print(f"\nModel without classifier: {model2.get_num_parameters():,}")
+    recon2, emb2 = model2(x)
+    print(f"Embedding:      {emb2.shape}")
+    print(f"Reconstruction: {recon2.shape}")
+
     print("\n✓ All tests passed!")

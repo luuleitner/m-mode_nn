@@ -2,10 +2,33 @@
 Vanilla CNN Autoencoder for Ultrasound M-mode Data
 
 Input format: [Batch, US_Channels, Depth, Pulses] = [B, 3, 130, 18]
+
+Supports optional classification head for joint reconstruction + classification training.
 """
 
 import torch
 import torch.nn as nn
+
+
+class ClassificationHead(nn.Module):
+    """
+    MLP classification head for embedding-based classification.
+    """
+
+    def __init__(self, embedding_dim, num_classes=3, hidden_dim=None, dropout=0.3):
+        super().__init__()
+        if hidden_dim is None:
+            hidden_dim = embedding_dim // 2
+
+        self.classifier = nn.Sequential(
+            nn.Linear(embedding_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, num_classes)
+        )
+
+    def forward(self, embedding):
+        return self.classifier(embedding)
 
 
 class CNNAutoencoder(nn.Module):
@@ -22,6 +45,8 @@ class CNNAutoencoder(nn.Module):
         channels: List of channel sizes for encoder layers (default: [16, 32, 64])
         embedding_dim: Size of bottleneck embedding (default: 256)
         use_batchnorm: Whether to use batch normalization (default: True)
+        num_classes: Number of classes for classification head (default: 3, set to 0 to disable)
+        classifier_dropout: Dropout rate for classification head (default: 0.3)
     """
 
     def __init__(
@@ -32,6 +57,8 @@ class CNNAutoencoder(nn.Module):
         channels: list = None,
         embedding_dim: int = 256,
         use_batchnorm: bool = True,
+        num_classes: int = 3,
+        classifier_dropout: float = 0.3,
     ):
         super().__init__()
 
@@ -44,6 +71,7 @@ class CNNAutoencoder(nn.Module):
         self.channels = channels
         self.embedding_dim = embedding_dim
         self.use_batchnorm = use_batchnorm
+        self.num_classes = num_classes
 
         # Build encoder
         encoder_layers = []
@@ -87,6 +115,14 @@ class CNNAutoencoder(nn.Module):
             kernel_size=3, stride=2, padding=1, output_padding=1
         )
 
+        # Classification head (optional)
+        if num_classes > 0:
+            self.classifier = ClassificationHead(
+                embedding_dim, num_classes, dropout=classifier_dropout
+            )
+        else:
+            self.classifier = None
+
     def _get_conv_output_size(self):
         """Calculate output size after encoder conv layers."""
         with torch.no_grad():
@@ -111,28 +147,48 @@ class CNNAutoencoder(nn.Module):
         return reconstruction
 
     def forward(self, x):
-        """Forward pass returning (reconstruction, embedding)."""
+        """
+        Forward pass.
+
+        Returns:
+            If classifier enabled: (reconstruction, embedding, logits)
+            If classifier disabled: (reconstruction, embedding)
+        """
         embedding = self.encode(x)
         reconstruction = self.decode(embedding)
+
+        if self.classifier is not None:
+            logits = self.classifier(embedding)
+            return reconstruction, embedding, logits
+
         return reconstruction, embedding
 
 
 # Quick test
 if __name__ == "__main__":
-    # Test with default config
+    # Test with default config (classification enabled)
     model = CNNAutoencoder()
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Test forward pass
     x = torch.randn(4, 3, 130, 18)
-    recon, emb = model(x)
+    recon, emb, logits = model(x)
     print(f"Input:          {x.shape}")
     print(f"Embedding:      {emb.shape}")
     print(f"Reconstruction: {recon.shape}")
+    print(f"Logits:         {logits.shape}")
 
     # Test with custom config
     model2 = CNNAutoencoder(channels=[32, 64, 128, 256], embedding_dim=512)
     print(f"\nDeeper model parameters: {sum(p.numel() for p in model2.parameters()):,}")
-    recon2, emb2 = model2(x)
+    recon2, emb2, logits2 = model2(x)
     print(f"Embedding:      {emb2.shape}")
     print(f"Reconstruction: {recon2.shape}")
+    print(f"Logits:         {logits2.shape}")
+
+    # Test without classification head
+    model3 = CNNAutoencoder(num_classes=0)
+    print(f"\nModel without classifier: {sum(p.numel() for p in model3.parameters()):,}")
+    recon3, emb3 = model3(x)
+    print(f"Embedding:      {emb3.shape}")
+    print(f"Reconstruction: {recon3.shape}")

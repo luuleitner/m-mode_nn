@@ -44,6 +44,14 @@ def create_model(config):
     reg_config = config.get_regularization_config()
     use_batchnorm = reg_config.get('batch_norm', True)
 
+    # Check if classification is enabled (classification_weight > 0)
+    loss_weights = config.get_loss_weights()
+    classification_weight = loss_weights.get('classification_weight', 0)
+    num_classes = 3 if classification_weight > 0 else 0
+
+    if num_classes > 0:
+        logger.info(f"Joint training enabled: classification_weight={classification_weight}")
+
     if model_type == "CNNAutoencoder":
         from src.models.cnn_ae import CNNAutoencoder
 
@@ -53,7 +61,8 @@ def create_model(config):
             input_width=config.preprocess.tokenization.window,
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
-            use_batchnorm=use_batchnorm
+            use_batchnorm=use_batchnorm,
+            num_classes=num_classes
         )
     elif model_type == "UNetAutoencoder":
         from src.models.unet_ae import UNetAutoencoder
@@ -64,7 +73,8 @@ def create_model(config):
             input_width=config.preprocess.tokenization.window,
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
-            use_batchnorm=use_batchnorm
+            use_batchnorm=use_batchnorm,
+            num_classes=num_classes
         )
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
@@ -324,6 +334,13 @@ def print_summary(history, test_metrics, results_dir):
     print(f"Final Val MSE:    {history['val_mse'][-1]:.6f}")
     print(f"Test MSE:         {test_metrics['test_mse']:.6f}")
     print(f"Test MAE:         {test_metrics['test_mae']:.6f}")
+
+    # Print classification accuracy if available
+    if 'val_accuracy' in history:
+        print(f"Final Val Acc:    {history['val_accuracy'][-1]:.2%}")
+    if 'test_accuracy' in test_metrics:
+        print(f"Test Accuracy:    {test_metrics['test_accuracy']:.2%}")
+
     print(f"Total Epochs:     {len(history['train_loss'])}")
     print(f"Results saved to: {results_dir}")
     print("=" * 60)

@@ -34,6 +34,11 @@ def create_model(config):
     """Create model based on config."""
     model_type = config.ml.model.type
 
+    # Check if classification was enabled during training
+    loss_weights = config.get_loss_weights()
+    classification_weight = loss_weights.get('classification_weight', 0)
+    num_classes = 3 if classification_weight > 0 else 0
+
     if model_type == "CNNAutoencoder":
         from src.models.cnn_ae import CNNAutoencoder
 
@@ -43,7 +48,8 @@ def create_model(config):
             input_width=config.preprocess.tokenization.window,
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
-            use_batchnorm=True
+            use_batchnorm=True,
+            num_classes=num_classes
         )
     elif model_type == "UNetAutoencoder":
         from src.models.unet_ae import UNetAutoencoder
@@ -54,7 +60,8 @@ def create_model(config):
             input_width=config.preprocess.tokenization.window,
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
-            use_batchnorm=True
+            use_batchnorm=True,
+            num_classes=num_classes
         )
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
@@ -70,7 +77,12 @@ def load_checkpoint(checkpoint_path: str, model: torch.nn.Module, device: str):
     logger.info(f"Loading checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
-    model.load_state_dict(checkpoint['model_state_dict'])
+    # Use strict=False to handle models with/without classifier head
+    missing, unexpected = model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    if missing:
+        logger.warning(f"Missing keys (may be expected if classifier config differs): {missing}")
+    if unexpected:
+        logger.warning(f"Unexpected keys (may be expected if classifier config differs): {unexpected}")
     logger.info("Model weights loaded successfully")
 
     # Log checkpoint info if available

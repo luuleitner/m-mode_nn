@@ -123,7 +123,8 @@ class VisualizationCallback(Callback):
         with torch.no_grad():
             batch = next(iter(self.test_loader))
             data, _ = self.trainer.adapter.prepare_batch(batch, self.trainer.device)
-            reconstruction, _ = self.trainer.model(data)
+            outputs = self.trainer.model(data)
+            reconstruction = outputs[0]  # Handle both 2 and 3 output formats
 
         save_path = os.path.join(self.save_dir, f'{prefix}reconstructions_epoch_{epoch+1}.png')
         self.trainer.adapter.visualize_reconstruction(data, reconstruction, save_path)
@@ -148,7 +149,8 @@ class VisualizationCallback(Callback):
                 if i >= max_batches:
                     break
                 data, _ = self.trainer.adapter.prepare_batch(batch, self.trainer.device)
-                _, embedding = self.trainer.model(data)
+                outputs = self.trainer.model(data)
+                embedding = outputs[1]  # Handle both 2 and 3 output formats
                 all_embeddings.append(embedding.cpu().numpy())
 
         if not all_embeddings:
