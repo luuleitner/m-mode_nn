@@ -33,6 +33,7 @@ class CallbackList:
 
     def __init__(self, callbacks=None):
         self.callbacks = callbacks or []
+        self.stop_training = False  # Early stopping flag
 
     def append(self, callback):
         self.callbacks.append(callback)

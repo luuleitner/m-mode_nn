@@ -17,21 +17,83 @@ global_setting:
         seed: &global_seed 353
 
   paths:
-    base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato"
-    process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/processed/Dataset_Envelope_CNN/Window18_Stride02_Labels_soft/latest"
+    base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
+    process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
+    train_base_data_path: &train_base_data_path " "
+
+
+# ========================================
+# PREPROCESSING CONFIGURATION
+# ========================================
+preprocess:
+  data:
+    basepath: *base_data_path
+    id: "Dataset_Envelope_CNN"
+    strategy: "all"                   # all | selection_file
+    selection_file: "/vol/data/2026_wristus_wiicontroller_sgambato/day002/raw/selection_20260129_202647.csv"   # Used when strategy=selection_file (run utils/generate_selection.py)
+    save_ftype: "h5"                  # h5, zarr
+
+  signal:
+    clip:
+      apply: true
+      initial_size: 1996
+      samples2remove_start: 107
+      samples2remove_end: 589
+    tgc:
+      apply: true
+      freq: 50e6                      # 50 MSPS
+      coef_att: 0.3                   # Attenuation coefficient in dB/(MHz·cm) - 0.5 is the standard for soft tissue, adjust as needed
+    bandpass:
+      apply: true
+      lowcut: 8e6                     # 8 MHz
+      highcut: 12e6                   # 12 MHz
+      fs: 50e6                        # 50 MSPS
+      order: 10
+    envelope:
+      apply: true
+      interp: false
+      padding:
+        apply: true
+        mode: "constant"
+        amount: 30
+    logcompression:
+      apply: true
+      db: 45
+    normalization:
+      apply: true
+      method: "peakZ"
+      minmax_path: "/home/cleitner/code/lab/projects/ML/m-mode_nn/config/minmax_Envdata.csv"
+    decimation:
+      apply: true
+      factor: 10                      # 50MSPS -> 5MSPS
+
+  tokenization:
+    tokens2file: true
+    startendID: false
+    window: 10
+    stride: 2
+    description: "Specifies the tokenization process."
+
+  sequencing:
+    window: 15
+
+  output:
+    mode: "flat"             # transformer | flat (flat for CNN, no sequencing)
+
+  # Label configuration is in a separate file for clarity
+  label_config: "preprocessing/label_logic/label_config.yaml"
+
 
 # ========================================
 # ML PIPELINE CONFIGURATION
 # ========================================
 ml:
-  # Data Loading
-  loading:
-    load_data_pickle: false
-
   # =====================================================================
   # DATASET CONFIGURATION - DATA SAMPLING PIPELINE
   # =====================================================================
+  # Data Loading
+  loading:
+    load_data_pickle: false
   #
   #  ┌─────────────────────────────────────────────────────────────────┐
   #  │  H5 FILES (from preprocessing)                                 │
@@ -93,8 +155,8 @@ ml:
     test_val_label_filter: null             # e.g., [1, 2]
 
     # --- Option B: RANDOM strategy ---
-    # Randomly select N experiments for test/val
-    test_val_random_experiments: 3          # Number of experiments to select
+    # Randomly select experiments for test/val
+    test_val_random_experiments: 0.1        # Count (>=1) or percentage (0-1), e.g., 3 or 0.1 for 10%
     test_val_multi_session: true            # Prefer experiments from different sessions
 
     # =========================================
@@ -173,24 +235,13 @@ ml:
       n_trials: 50
 
   # =====================================================================
-  # CNN CLASSIFIER CONFIGURATION (end-to-end classification)
+  # TRAINING CONFIGURATION
   # =====================================================================
-  # Alternative to AE + XGBoost: direct CNN classification
-  # Run with: python -m src.training.train_cnn_classifier --config config/config.yaml
-  classifier_cnn:
-    channels: [32, 64, 128, 256]      # Encoder channels (same as UNet)
-    hidden_dim: 256                    # Classification head hidden dimension
-    num_classes: 3                     # noise, upward, downward
-    dropout: 0.5                       # Dropout rate for regularization
-    epochs: 500                        # Training epochs
-    learning_rate: 0.0001              # Learning rate
-
-  # Training Configuration
   training:
     # Basic Training Parameters
     epochs: 150
-    lr: 0.0001
-    weight_decay: 1e-4
+    lr: 0.0003                        # AdamW works well with slightly higher LR
+    weight_decay: 0.01                # Stronger weight decay for AdamW
 
     # Optimizer Configuration
     optimizer:
@@ -202,10 +253,6 @@ ml:
     # Learning Rate Scheduler
     lr_scheduler:
       type: "cosine"                  # plateau, onecycle, cosine, step, none
-      factor: 0.5                    # ReduceLROnPlateau factor
-      patience: 10                   # ReduceLROnPlateau patience
-      threshold: 1e-4                # ReduceLROnPlateau threshold
-      min_lr: 1e-6                   # Minimum learning rate
 
     # Loss Configuration
     loss_weights:
@@ -216,7 +263,6 @@ ml:
     # Training Regularization
     regularization:
       grad_clip_norm: 1.0            # Gradient clipping norm
-      dropout_rate: 0.0              # Dropout rate (if applicable)
       batch_norm: true               # Use batch normalization
 
     # Class Balancing at Training Time
@@ -237,68 +283,15 @@ ml:
 
     # Validation and Evaluation
     validation:
-      plot_every_n_epochs: 1         # Generate plots every N epochs
+      plot_every_n_epochs: 2         # Generate plots every N epochs
 
-# ========================================
-# PREPROCESSING CONFIGURATION
-# ========================================
-preprocess:
-  data:
-    basepath: *base_data_path
-    id: "Dataset_Envelope_CNN"
-    strategy: "all"                   # all | selection_file
-    selection_file: "/vol/data/2026_wristus_wiicontroller_sgambato/raw/day002/selection_20260129_202647.csv"   # Used when strategy=selection_file (run utils/generate_selection.py)
-    save_ftype: "h5"                  # h5, zarr
+    # Early Stopping
+    early_stopping:
+      enabled: true                  # Enable early stopping
+      patience: 20                   # Epochs to wait for improvement
+      min_delta: 1e-5                # Minimum change to count as improvement
+      monitor: "val_loss"            # Metric to monitor
 
-  signal:
-    bandpass:
-      apply: true
-      lowcut: 8e6                     # 8 MHz
-      highcut: 12e6                   # 12 MHz
-      fs: 50e6                        # 50 MSPS
-      order: 10
-    tgc:
-      apply: true
-      freq: 50e6                      # 50 MSPS
-      coef_att: 0.3                   # Attenuation coefficient in dB/(MHz·cm) - 0.5 is the standard for soft tissue, adjust as needed
-    clip:
-      apply: true
-      initial_size: 1996
-      samples2remove_start: 107
-      samples2remove_end: 589             
-    envelope:
-      apply: true
-      interp: false
-      padding:
-        apply: true
-        mode: "constant"
-        amount: 30
-    logcompression:
-      apply: true
-      db: 45
-    normalization:
-      apply: true
-      method: "peakZ"
-      minmax_path: "/home/cleitner/code/lab/projects/ML/m-mode_nn/config/minmax_Envdata.csv"
-    decimation:
-      apply: true
-      factor: 10                      # 50MSPS -> 5MSPS
-
-  tokenization:
-    tokens2file: true
-    startendID: false
-    window: 18
-    stride: 2
-    description: "Specifies the tokenization process."
-
-  sequencing:
-    window: 15
-
-  output:
-    mode: "flat"             # transformer | flat (flat for CNN, no sequencing)
-
-  # Label configuration is in a separate file for clarity
-  label_config: "preprocessing/label_logic/label_config.yaml"
 
 # ========================================
 # LOGGING CONFIGURATION
@@ -337,9 +330,9 @@ experiment:
 
   # Resource Management
   resources:
-    num_workers: 2                   # DataLoader workers
+    num_workers: 8                   # DataLoader workers
     pin_memory: true                 # Pin memory for faster GPU transfer
-    prefetch_factor: 2               # DataLoader prefetch factor
+    prefetch_factor: 4               # DataLoader prefetch factor
 
 # ========================================
 # ADVANCED TRAINING OPTIONS

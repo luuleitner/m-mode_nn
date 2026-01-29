@@ -227,15 +227,13 @@ class TokenVisualizer:
         """
         Load raw US and joystick data for an experiment.
         """
-        # Find session folder (format: session{N}_W_{participant})
-        session_pattern = f"session{int(session_id)}_W_{int(participant_id):03d}"
-        session_folders = glob.glob(os.path.join(self.raw_data_path, f"session{int(session_id)}_W_*"))
-
-        if not session_folders:
-            raise FileNotFoundError(f"Session folder not found: {session_pattern}")
-
-        session_folder = session_folders[0]
-        exp_folder = os.path.join(session_folder, str(int(experiment_id)))
+        # New hierarchy: P{participant}/session{session}/exp{experiment}
+        exp_folder = os.path.join(
+            self.raw_data_path,
+            f"P{int(participant_id):03d}",
+            f"session{int(session_id):03d}",
+            f"exp{int(experiment_id):03d}"
+        )
 
         if not os.path.exists(exp_folder):
             raise FileNotFoundError(f"Experiment folder not found: {exp_folder}")
