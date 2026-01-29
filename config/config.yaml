@@ -247,7 +247,7 @@ preprocess:
     basepath: *base_data_path
     id: "Dataset_Envelope_CNN"
     strategy: "all"                   # all | selection_file
-    selection_file: "config/preprocessing_selection.csv"   # Used when strategy=selection_file (run utils/generate_selection.py)
+    selection_file: "/vol/data/2026_wristus_wiicontroller_sgambato/raw/day002/selection_20260129_202647.csv"   # Used when strategy=selection_file (run utils/generate_selection.py)
     save_ftype: "h5"                  # h5, zarr
 
   signal:
