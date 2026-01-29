@@ -355,10 +355,11 @@ class DataProcessor():
 
     def _load_fstructure(self):
         """Load all experiment folders from raw data directory."""
-        all_paths = glob.glob(os.path.join(self._data_path_raw, "session*", "*"), recursive=True)
+        # New hierarchy: P*/session*/exp*
+        all_paths = glob.glob(os.path.join(self._data_path_raw, "P*", "session*", "exp*"))
         self._fstructure = sorted([
             f for f in all_paths
-            if os.path.isdir(f) and os.path.basename(f).isdigit()
+            if os.path.isdir(f)
         ])
         logger.info(f"Found {len(self._fstructure)} experiments in {self._data_path_raw}")
 
@@ -367,15 +368,11 @@ class DataProcessor():
         Load experiment selection from a CSV or YAML selection file.
 
         CSV format (recommended - easy to edit in spreadsheet):
-            session,experiment,include
-            session14_W_1,0,1
-            session14_W_1,1,0    # excluded (include=0)
+            participant,session,experiment,include[,path]
+            0,0,0,1,/path/to/P000/session000/exp000
+            0,0,1,0    # excluded (include=0)
 
-        YAML format:
-            mode: "include" | "exclude"
-            sessions:
-              session14_W_1:
-                experiments: [0, 1, 2] | "all"
+        YAML format: Not supported for new hierarchy (use CSV instead)
         """
         import csv as csv_module
 
@@ -394,96 +391,51 @@ class DataProcessor():
             self._fstructure = self._load_selection_yaml(selection_path)
 
     def _load_selection_csv(self, csv_path, csv_module):
-        """Load selection from CSV file."""
+        """Load selection from CSV file.
+
+        CSV format: participant,session,experiment,include[,path]
+        """
         selected_experiments = []
 
         with open(csv_path, 'r', newline='') as f:
             reader = csv_module.DictReader(f)
 
             for row in reader:
-                session = row['session']
-                experiment = int(row['experiment'])
                 include = row.get('include', '1')
 
                 # Handle various include formats: 1, 0, true, false, yes, no
-                if str(include).lower() in ('1', 'true', 'yes', ''):
-                    exp_path = os.path.join(self._data_path_raw, session, str(experiment))
-                    if os.path.isdir(exp_path):
-                        selected_experiments.append(exp_path)
-                    else:
-                        logger.warning(f"Experiment path not found: {exp_path}")
+                if str(include).lower() not in ('1', 'true', 'yes', ''):
+                    continue
+
+                # Use path column if available, otherwise construct from components
+                if 'path' in row and row['path']:
+                    exp_path = row['path']
+                else:
+                    participant = int(row['participant'])
+                    session = int(row['session'])
+                    experiment = int(row['experiment'])
+                    exp_path = os.path.join(
+                        self._data_path_raw,
+                        f"P{participant:03d}",
+                        f"session{session:03d}",
+                        f"exp{experiment:03d}"
+                    )
+
+                if os.path.isdir(exp_path):
+                    selected_experiments.append(exp_path)
+                else:
+                    logger.warning(f"Experiment path not found: {exp_path}")
 
         selected_experiments = sorted(selected_experiments)
         logger.info(f"CSV selection loaded: {len(selected_experiments)} experiments")
         return selected_experiments
 
     def _load_selection_yaml(self, yaml_path):
-        """Load selection from YAML file."""
-        with open(yaml_path, 'r') as f:
-            selection = yaml.safe_load(f)
-
-        mode = selection.get('mode', 'include')
-        session_default = selection.get('session_default', 'all')
-        sessions_config = selection.get('sessions', {})
-
-        # Get all available experiments
-        all_experiments = [f for f in glob.glob(os.path.join(self._data_path_raw, "session*", "*"), recursive=True)
-                          if os.path.isdir(f) and os.path.basename(f).isdigit()]
-
-        # Build lookup: session_name -> experiment paths
-        session_experiments = {}
-        for exp_path in all_experiments:
-            session_dir = os.path.basename(os.path.dirname(exp_path))
-            if session_dir not in session_experiments:
-                session_experiments[session_dir] = []
-            session_experiments[session_dir].append(exp_path)
-
-        selected_experiments = []
-
-        if mode == 'include':
-            for session_name, session_cfg in sessions_config.items():
-                if session_name not in session_experiments:
-                    logger.warning(f"Session '{session_name}' not found, skipping")
-                    continue
-
-                exp_paths = session_experiments[session_name]
-                experiments_spec = session_cfg.get('experiments', session_default)
-                exclude_exp = session_cfg.get('exclude_experiments', [])
-
-                if experiments_spec == "none":
-                    continue
-                elif experiments_spec == "all":
-                    for p in exp_paths:
-                        exp_num = int(os.path.basename(p))
-                        if exp_num not in exclude_exp:
-                            selected_experiments.append(p)
-                else:
-                    for p in exp_paths:
-                        exp_num = int(os.path.basename(p))
-                        if exp_num in experiments_spec and exp_num not in exclude_exp:
-                            selected_experiments.append(p)
-
-        elif mode == 'exclude':
-            for session_name, exp_paths in session_experiments.items():
-                if session_name in sessions_config:
-                    session_cfg = sessions_config[session_name]
-                    experiments_spec = session_cfg.get('experiments', 'none')
-
-                    if experiments_spec == "all":
-                        continue
-                    elif experiments_spec == "none":
-                        selected_experiments.extend(exp_paths)
-                    else:
-                        for p in exp_paths:
-                            exp_num = int(os.path.basename(p))
-                            if exp_num not in experiments_spec:
-                                selected_experiments.append(p)
-                else:
-                    selected_experiments.extend(exp_paths)
-
-        selected_experiments = sorted(selected_experiments)
-        logger.info(f"YAML selection loaded: {len(selected_experiments)} experiments from {len(sessions_config)} sessions")
-        return selected_experiments
+        """Load selection from YAML file - not supported for new hierarchy."""
+        raise NotImplementedError(
+            "YAML selection is not supported for the new P/session/exp hierarchy. "
+            "Please use CSV format instead. Generate with: python utils/generate_selection.py"
+        )
 
 
     def _process_experiments(self):
@@ -586,17 +538,20 @@ class DataProcessor():
         data_X = np.stack(data[:nbr_us_channels], axis=0)
         data_y = np.stack(data[nbr_us_channels:], axis=0)
 
-        # Parse participant and session info from folder path
+        # Parse participant, session, and experiment info from folder path
+        # Expected format: .../P000/session000/exp000
         session_path = os.path.normpath(exp)
-        self._experiment_id = os.path.basename(session_path)
 
-        match = re.search(r"session(\d+)_W_(\d+)", session_path)
+        match = re.search(r"P(\d+)/session(\d+)/exp(\d+)", session_path)
         if match:
-            self._session_id = match.group(1)
-            self._participant_id =  str(int(match.group(2)))
+            self._participant_id = str(int(match.group(1)))  # "000" -> "0"
+            self._session_id = str(int(match.group(2)))      # "000" -> "0"
+            self._experiment_id = str(int(match.group(3)))   # "000" -> "0"
         else:
-            self._session_id = None
+            logger.warning(f"Could not parse P/session/exp from path: {session_path}")
             self._participant_id = None
+            self._session_id = None
+            self._experiment_id = None
 
         # ---------------------------------------------
         # Run Processing on Experimental Data
