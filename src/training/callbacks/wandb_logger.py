@@ -30,7 +30,7 @@ class WandBCallback(Callback):
 
         self.enabled = WANDB_AVAILABLE
         self._run = None
-        self._step = 0
+        self._batch_step = 0  # Global batch counter across all epochs
 
     def on_train_begin(self, logs=None):
         if not self.enabled:
@@ -44,6 +44,14 @@ class WandBCallback(Callback):
                 dir=self.save_dir,
                 reinit=True
             )
+
+            # Define separate x-axes for batch-level and epoch-level metrics
+            # This prevents step conflicts between batch and epoch logging
+            wandb.define_metric("batch_step")
+            wandb.define_metric("epoch")
+            wandb.define_metric("batch/*", step_metric="batch_step")
+            wandb.define_metric("train/*", step_metric="epoch")
+            wandb.define_metric("val/*", step_metric="epoch")
 
             if self.watch_model and hasattr(self.trainer, 'model'):
                 wandb.watch(self.trainer.model, log='gradients', log_freq=100)
@@ -79,13 +87,14 @@ class WandBCallback(Callback):
 
         logs = logs or {}
         try:
+            # Log epoch-level metrics with 'epoch' as the x-axis
             wandb.log({
                 'epoch': epoch,
                 'train/loss': logs.get('train_loss'),
                 'val/loss': logs.get('val_loss'),
                 'val/mse': logs.get('val_mse'),
                 'train/learning_rate': logs.get('learning_rate')
-            }, step=epoch)
+            })
         except Exception as e:
             logger.warning(f"Failed to log to WandB: {e}")
 
@@ -95,13 +104,15 @@ class WandBCallback(Callback):
 
         logs = logs or {}
         try:
+            # Log batch-level metrics with 'batch_step' as the x-axis
+            # Keys from base_trainer.compute_loss: total_loss, mse_loss, l1_loss, embedding_reg
             wandb.log({
-                'batch/loss': logs.get('loss'),
+                'batch_step': self._batch_step,
+                'batch/loss': logs.get('total_loss'),
                 'batch/mse_loss': logs.get('mse_loss'),
                 'batch/l1_loss': logs.get('l1_loss'),
-                'step': self._step
             })
-            self._step += 1
+            self._batch_step += 1
         except Exception as e:
             logger.warning(f"Failed to log batch to WandB: {e}")
 

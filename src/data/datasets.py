@@ -750,11 +750,11 @@ class FilteredSplitH5Dataset(Dataset):
         if len(batch_sequences) == 0:
             return {'tokens': torch.empty(0), 'labels': torch.empty(0)}
 
-        final_batch = np.stack(batch_sequences, axis=0)
+        final_batch = np.stack(batch_sequences, axis=0).astype(np.float32)
 
         # Stack labels
         if len(batch_labels) > 0:
-            final_labels = np.stack(batch_labels, axis=0)
+            final_labels = np.stack(batch_labels, axis=0).astype(np.float32)
         else:
             final_labels = None
 

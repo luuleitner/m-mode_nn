@@ -52,6 +52,17 @@ def create_model(config):
             embedding_dim=config.ml.model.embedding_dim,
             use_batchnorm=True
         )
+    elif model_type == "UNetAutoencoder":
+        from src.models.unet_ae import UNetAutoencoder
+
+        model = UNetAutoencoder(
+            in_channels=3,
+            input_height=130,
+            input_width=config.preprocess.tokenization.window,
+            channels=config.ml.model.channels_per_layer,
+            embedding_dim=config.ml.model.embedding_dim,
+            use_batchnorm=True
+        )
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -65,7 +76,7 @@ def create_adapter(config):
     """Create adapter based on model type."""
     model_type = config.ml.model.type
 
-    if model_type == "CNNAutoencoder":
+    if model_type in ["CNNAutoencoder", "UNetAutoencoder"]:
         return CNNAdapter()
     else:
         raise ValueError(f"No adapter for model type: {model_type}")
@@ -232,11 +243,15 @@ def main(config_path, restart=False):
         results_dir=results_base
     )
 
-    # Update visualization callback with actual test_loader
+    # Update all callbacks with the trainer's timestamped results directory
+    # This ensures checkpoints, visualizations, and logs all go to the same run folder
     for cb in trainer.callbacks.callbacks:
         if isinstance(cb, VisualizationCallback):
             cb.set_test_loader(test_loader)
+            cb.save_dir = trainer.results_dir
         if isinstance(cb, CheckpointCallback):
+            cb.save_dir = trainer.results_dir
+        if isinstance(cb, WandBCallback):
             cb.save_dir = trainer.results_dir
 
     # Get training parameters
