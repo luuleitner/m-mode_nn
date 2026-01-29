@@ -1,5 +1,8 @@
 """
-CNN Adapter - Handles CNN autoencoder with input [B, C, H, W] = [Batch, 3, 130, 18]
+CNN Adapter - Handles CNN autoencoder with input [B, C, H, W] = [Batch, 3, Pulses, Depth]
+
+Note: Data is transposed from storage format [B, C, Depth, Pulses] to model format
+[B, C, Pulses, Depth] to preserve temporal resolution through encoder pooling.
 """
 
 import numpy as np
@@ -10,11 +13,14 @@ from .base_adapter import BaseAdapter
 class CNNAdapter(BaseAdapter):
     """Adapter for CNN autoencoder with 4D input [B, C, H, W]."""
 
-    def __init__(self, log_compression_db=65.0):
+    def __init__(self, log_compression_db=65.0, transpose_hw=True):
         self.log_compression_db = log_compression_db
+        self.transpose_hw = transpose_hw  # Transpose H/W for better temporal preservation
 
     @property
     def input_format(self):
+        if self.transpose_hw:
+            return "[B, C, H, W] = [Batch, US_Channels, Pulses, Depth] (transposed)"
         return "[B, C, H, W] = [Batch, US_Channels, Depth, Pulses]"
 
     def prepare_batch(self, batch, device):
@@ -22,19 +28,27 @@ class CNNAdapter(BaseAdapter):
         Prepare batch for CNN model.
         Handles dict format {'tokens': tensor, 'labels': tensor}, tuples, or plain tensors.
 
+        If transpose_hw=True, transposes from storage [B,C,Depth,Pulses] to [B,C,Pulses,Depth]
+        to preserve temporal resolution through encoder pooling layers.
+
         Returns:
             tuple: (data, labels) where labels may be None
         """
         if isinstance(batch, dict):
             data = batch['tokens'].to(device)
             labels = batch['labels'].to(device) if batch['labels'] is not None else None
-            return data, labels
         elif isinstance(batch, (list, tuple)):
             data = batch[0].to(device)
             labels = batch[1].to(device) if len(batch) > 1 else None
-            return data, labels
         else:
-            return batch.to(device), None
+            data = batch.to(device)
+            labels = None
+
+        # Transpose H/W: [B, C, Depth, Pulses] → [B, C, Pulses, Depth]
+        if self.transpose_hw:
+            data = data.permute(0, 1, 3, 2)
+
+        return data, labels
 
     def get_input_info(self, data):
         """Extract shape information for logging."""
@@ -42,12 +56,24 @@ class CNNAdapter(BaseAdapter):
             return {'shape': data.shape, 'warning': f'Expected 4D [B,C,H,W], got {len(data.shape)}D'}
 
         B, C, H, W = data.shape
+        if self.transpose_hw:
+            # After transpose: H=Pulses, W=Depth
+            return {
+                'shape': list(data.shape),
+                'batch_size': B,
+                'channels': C,
+                'pulses': H,
+                'depth_samples': W,
+                'transposed': True,
+                'memory_mb': (data.numel() * data.element_size()) / (1024 * 1024)
+            }
         return {
             'shape': list(data.shape),
             'batch_size': B,
             'channels': C,
             'depth_samples': H,
             'pulses': W,
+            'transposed': False,
             'memory_mb': (data.numel() * data.element_size()) / (1024 * 1024)
         }
 
@@ -63,6 +89,12 @@ class CNNAdapter(BaseAdapter):
         """Visualize M-mode reconstructions as heatmaps."""
         original = original.cpu().numpy()
         reconstruction = reconstruction.cpu().numpy()
+
+        # Transpose back for visualization if needed: [B,C,Pulses,Depth] → [B,C,Depth,Pulses]
+        if self.transpose_hw:
+            original = np.transpose(original, (0, 1, 3, 2))
+            reconstruction = np.transpose(reconstruction, (0, 1, 3, 2))
+
         n_samples = min(n_samples, original.shape[0])
 
         fig, axes = plt.subplots(n_samples, 3, figsize=(12, 4 * n_samples))
@@ -104,6 +136,12 @@ class CNNAdapter(BaseAdapter):
         """Visualize A-line comparisons (depth profiles at specific pulses)."""
         original = original.cpu().numpy()
         reconstruction = reconstruction.cpu().numpy()
+
+        # Transpose back for visualization if needed: [B,C,Pulses,Depth] → [B,C,Depth,Pulses]
+        if self.transpose_hw:
+            original = np.transpose(original, (0, 1, 3, 2))
+            reconstruction = np.transpose(reconstruction, (0, 1, 3, 2))
+
         n_samples = min(n_samples, original.shape[0])
         n_pulses = 3
 
@@ -140,6 +178,12 @@ class CNNAdapter(BaseAdapter):
         """Visualize all 3 US channels for a single sample."""
         original = original.cpu().numpy()
         reconstruction = reconstruction.cpu().numpy()
+
+        # Transpose back for visualization if needed: [B,C,Pulses,Depth] → [B,C,Depth,Pulses]
+        if self.transpose_hw:
+            original = np.transpose(original, (0, 1, 3, 2))
+            reconstruction = np.transpose(reconstruction, (0, 1, 3, 2))
+
         n_channels = min(3, original.shape[1])
 
         fig, axes = plt.subplots(n_channels, 3, figsize=(12, 4 * n_channels))

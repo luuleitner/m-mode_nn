@@ -39,13 +39,17 @@ def create_model(config):
     classification_weight = loss_weights.get('classification_weight', 0)
     num_classes = 3 if classification_weight > 0 else 0
 
+    # Input dimensions after transpose: [B, C, Pulses, Depth]
+    input_pulses = config.preprocess.tokenization.window
+    input_depth = 130
+
     if model_type == "CNNAutoencoder":
         from src.models.cnn_ae import CNNAutoencoder
 
         model = CNNAutoencoder(
             in_channels=3,
-            input_height=130,
-            input_width=config.preprocess.tokenization.window,
+            input_height=input_pulses,  # Pulses (temporal)
+            input_width=input_depth,     # Depth (spatial)
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
             use_batchnorm=True,
@@ -56,8 +60,8 @@ def create_model(config):
 
         model = UNetAutoencoder(
             in_channels=3,
-            input_height=130,
-            input_width=config.preprocess.tokenization.window,
+            input_height=input_pulses,  # Pulses (temporal)
+            input_width=input_depth,     # Depth (spatial)
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
             use_batchnorm=True,
@@ -162,6 +166,10 @@ def extract_embeddings_from_loader(
             else:
                 data = batch.to(device)
                 labels = None
+
+            # Transpose H/W: [B, C, Depth, Pulses] → [B, C, Pulses, Depth]
+            # Matches the adapter transpose used during training
+            data = data.permute(0, 1, 3, 2)
 
             # Extract embeddings
             embeddings = model.encode(data)
