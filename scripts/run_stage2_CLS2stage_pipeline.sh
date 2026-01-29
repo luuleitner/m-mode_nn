@@ -21,13 +21,13 @@ cd "$PROJECT_ROOT"
 
 # Default values
 CONFIG="/home/cleitner/code/lab/projects/ML/m-mode_nn/config/config.yaml"
-CHECKPOINT="/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_CNN/Window18_Stride02_Labels_soft/latest/checkpoints/training_20260129_022831/best_checkpoint_epoch_0117_loss_0.001767.pth"
+CHECKPOINT=""
 TARGET_RECALL="0.7"
 TUNE=""
 NORMALIZE=""
-N_TRIALS="30"
+N_TRIALS=""
 SKIP_EXTRACTION="true"
-EMBEDDINGS_FILE="/vol/data/2025_wristus_wiicontroller_leitner/processed/Dataset_Envelope_CNN/Window18_Stride02_Labels_soft/latest/checkpoints/training_20260129_022831/embeddings/embeddings_20260129_112824.npz"
+EMBEDDINGS_FILE="/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride02_Labels_soft/latest/checkpoints/training_20260129_215547/embeddings/embeddings_latest.npz"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -66,19 +66,19 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --help|-h)
-            echo "Usage: $0 --config <config.yaml> --checkpoint <model.pth> [options]"
+            echo "Usage: $0 --config <config.yaml> [--checkpoint <model.pth>] [options]"
             echo ""
             echo "Required:"
             echo "  --config, -c        Path to config YAML file"
-            echo "  --checkpoint, -ckpt Path to trained model checkpoint (.pth)"
+            echo "  --checkpoint, -ckpt Path to model checkpoint (required unless --embeddings provided)"
             echo ""
             echo "Optional:"
             echo "  --target-recall     Target detection recall (default: 0.7)"
             echo "  --tune, -t          Run hyperparameter tuning with Optuna"
             echo "  --n-trials          Number of Optuna trials (default: 30)"
             echo "  --normalize, -n     Normalize embeddings with StandardScaler"
-            echo "  --skip-extraction, -s  Skip embedding extraction (use existing embeddings)"
-            echo "  --embeddings, -e    Path to existing embeddings file (implies --skip-extraction)"
+            echo "  --skip-extraction, -s  Skip embedding extraction (requires --embeddings)"
+            echo "  --embeddings, -e    Path to existing embeddings file (skips extraction)"
             echo "  --help, -h          Show this help message"
             exit 0
             ;;
@@ -95,23 +95,30 @@ if [[ -z "$CONFIG" ]]; then
     exit 1
 fi
 
-if [[ -z "$CHECKPOINT" ]]; then
-    echo "Error: --checkpoint is required"
-    exit 1
-fi
-
 if [[ ! -f "$CONFIG" ]]; then
     echo "Error: Config file not found: $CONFIG"
     exit 1
 fi
 
-if [[ ! -f "$CHECKPOINT" ]]; then
-    echo "Error: Checkpoint file not found: $CHECKPOINT"
-    exit 1
+# Checkpoint only required if NOT skipping extraction
+if [[ "$SKIP_EXTRACTION" != "true" ]]; then
+    if [[ -z "$CHECKPOINT" ]]; then
+        echo "Error: --checkpoint is required (unless using --skip-extraction or --embeddings)"
+        exit 1
+    fi
+
+    if [[ ! -f "$CHECKPOINT" ]]; then
+        echo "Error: Checkpoint file not found: $CHECKPOINT"
+        exit 1
+    fi
 fi
 
-# Get directory of checkpoint for output
-CHECKPOINT_DIR=$(dirname "$CHECKPOINT")
+# Get directory of checkpoint for output (or embeddings file if skipping)
+if [[ -n "$CHECKPOINT" ]]; then
+    CHECKPOINT_DIR=$(dirname "$CHECKPOINT")
+else
+    CHECKPOINT_DIR=$(dirname "$EMBEDDINGS_FILE")
+fi
 EMBEDDINGS_DIR="${CHECKPOINT_DIR}/embeddings"
 
 echo "========================================================================"
