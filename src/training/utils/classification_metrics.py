@@ -3,6 +3,13 @@ Classification Metrics - Evaluation utilities for classification tasks.
 
 Provides functions for computing metrics and generating visualizations
 for multi-class classification on embeddings.
+
+Includes extended metrics for imbalanced/anomaly detection problems:
+- MCC (Matthews Correlation Coefficient)
+- G-mean (Geometric mean of per-class recalls)
+- Balanced accuracy
+- Intention detection metrics (binary: noise vs intention)
+- Average Precision (PR-AUC) per class
 """
 
 import numpy as np
@@ -16,7 +23,9 @@ from sklearn.metrics import (
     roc_curve,
     auc,
     precision_recall_curve,
-    average_precision_score
+    average_precision_score,
+    matthews_corrcoef,
+    balanced_accuracy_score
 )
 
 
@@ -90,6 +99,166 @@ def compute_classification_metrics(
 
         metrics['roc_auc_per_class'] = roc_auc_per_class
         metrics['roc_auc_macro'] = np.nanmean(roc_auc_per_class)
+
+    return metrics
+
+
+def compute_anomaly_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_proba: Optional[np.ndarray] = None,
+    class_names: Optional[List[str]] = None,
+    noise_class: int = 0
+) -> Dict:
+    """
+    Compute extended metrics for imbalanced/anomaly detection problems.
+
+    Assumes class 0 is the majority "noise" class and classes 1+ are
+    minority "intention" classes to detect.
+
+    Args:
+        y_true: Ground truth labels (N,)
+        y_pred: Predicted labels (N,)
+        y_proba: Predicted probabilities (N, num_classes), optional
+        class_names: List of class names for display
+        noise_class: Index of the noise/majority class (default: 0)
+
+    Returns:
+        Dictionary with anomaly-focused metrics:
+        - mcc: Matthews Correlation Coefficient
+        - balanced_accuracy: Macro-averaged recall
+        - g_mean: Geometric mean of per-class recalls
+        - minority_f1: Average F1 of minority classes
+        - ap_per_class: Average Precision per class
+        - ap_macro: Macro-averaged AP
+        - intention_detection: Binary detection metrics (noise vs intention)
+    """
+    num_classes = len(np.unique(y_true))
+    if class_names is None:
+        class_names = [f"Class {i}" for i in range(num_classes)]
+
+    metrics = {}
+
+    # Matthews Correlation Coefficient - handles imbalance well
+    metrics['mcc'] = matthews_corrcoef(y_true, y_pred)
+
+    # Balanced accuracy (macro-averaged recall)
+    metrics['balanced_accuracy'] = balanced_accuracy_score(y_true, y_pred)
+
+    # Per-class recall for G-mean calculation
+    recalls = []
+    for i in range(num_classes):
+        mask = y_true == i
+        if mask.sum() > 0:
+            recall_i = (y_pred[mask] == i).sum() / mask.sum()
+            recalls.append(recall_i)
+        else:
+            recalls.append(0.0)
+    metrics['recall_per_class'] = recalls
+
+    # G-mean: geometric mean of per-class recalls
+    # Penalizes models that sacrifice minority class performance
+    if all(r > 0 for r in recalls):
+        metrics['g_mean'] = np.power(np.prod(recalls), 1.0 / len(recalls))
+    else:
+        metrics['g_mean'] = 0.0
+
+    # Minority class F1 (average F1 of non-noise classes)
+    _, _, f1_per_class, _ = precision_recall_fscore_support(
+        y_true, y_pred, average=None, zero_division=0
+    )
+    minority_indices = [i for i in range(num_classes) if i != noise_class]
+    if minority_indices:
+        metrics['minority_f1'] = np.mean([f1_per_class[i] for i in minority_indices])
+        metrics['f1_per_class'] = f1_per_class.tolist()
+    else:
+        metrics['minority_f1'] = 0.0
+
+    # Average Precision (PR-AUC) per class - better than ROC-AUC for imbalanced
+    if y_proba is not None:
+        ap_per_class = []
+        for i in range(num_classes):
+            y_true_binary = (y_true == i).astype(int)
+            if y_true_binary.sum() > 0 and y_true_binary.sum() < len(y_true_binary):
+                ap = average_precision_score(y_true_binary, y_proba[:, i])
+                ap_per_class.append(ap)
+            else:
+                ap_per_class.append(np.nan)
+
+        metrics['ap_per_class'] = ap_per_class
+        metrics['ap_macro'] = np.nanmean(ap_per_class)
+
+        # Minority AP (average AP of non-noise classes)
+        minority_ap = [ap_per_class[i] for i in minority_indices if not np.isnan(ap_per_class[i])]
+        metrics['minority_ap'] = np.mean(minority_ap) if minority_ap else 0.0
+
+    return metrics
+
+
+def compute_intention_detection_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_proba: Optional[np.ndarray] = None,
+    noise_class: int = 0
+) -> Dict:
+    """
+    Compute binary intention detection metrics (noise vs any intention).
+
+    Useful when the primary goal is detecting that an intention occurred,
+    with direction classification being secondary.
+
+    Args:
+        y_true: Ground truth labels (N,)
+        y_pred: Predicted labels (N,)
+        y_proba: Predicted probabilities (N, num_classes), optional
+        noise_class: Index of the noise class (default: 0)
+
+    Returns:
+        Dictionary with binary detection metrics:
+        - detection_precision: Precision for detecting intentions
+        - detection_recall: Recall for detecting intentions
+        - detection_f1: F1 score for intention detection
+        - detection_ap: Average Precision for intention detection
+        - confusion_binary: 2x2 confusion matrix [noise vs intention]
+    """
+    # Convert to binary: noise (0) vs intention (1)
+    y_true_binary = (y_true != noise_class).astype(int)
+    y_pred_binary = (y_pred != noise_class).astype(int)
+
+    metrics = {}
+
+    # Binary confusion matrix
+    tn = ((y_true_binary == 0) & (y_pred_binary == 0)).sum()
+    fp = ((y_true_binary == 0) & (y_pred_binary == 1)).sum()
+    fn = ((y_true_binary == 1) & (y_pred_binary == 0)).sum()
+    tp = ((y_true_binary == 1) & (y_pred_binary == 1)).sum()
+
+    metrics['confusion_binary'] = [[int(tn), int(fp)], [int(fn), int(tp)]]
+
+    # Precision, recall, F1 for intention detection
+    metrics['detection_precision'] = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    metrics['detection_recall'] = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+    if metrics['detection_precision'] + metrics['detection_recall'] > 0:
+        metrics['detection_f1'] = (
+            2 * metrics['detection_precision'] * metrics['detection_recall'] /
+            (metrics['detection_precision'] + metrics['detection_recall'])
+        )
+    else:
+        metrics['detection_f1'] = 0.0
+
+    # Average Precision for intention detection
+    if y_proba is not None:
+        # P(intention) = 1 - P(noise) = sum of all non-noise probabilities
+        p_intention = 1.0 - y_proba[:, noise_class]
+        metrics['detection_ap'] = average_precision_score(y_true_binary, p_intention)
+    else:
+        metrics['detection_ap'] = None
+
+    # Additional stats
+    metrics['n_true_intentions'] = int(y_true_binary.sum())
+    metrics['n_pred_intentions'] = int(y_pred_binary.sum())
+    metrics['n_total'] = len(y_true)
 
     return metrics
 

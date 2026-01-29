@@ -27,7 +27,7 @@ global_setting:
 ml:
   # Data Loading
   loading:
-    load_data_pickle: false
+    load_data_pickle: true
 
   # =====================================================================
   # DATASET CONFIGURATION - DATA SAMPLING PIPELINE
@@ -182,7 +182,7 @@ ml:
     hidden_dim: 256                    # Classification head hidden dimension
     num_classes: 3                     # noise, upward, downward
     dropout: 0.5                       # Dropout rate for regularization
-    epochs: 100                        # Training epochs
+    epochs: 500                        # Training epochs
     learning_rate: 0.0001              # Learning rate
 
   # Training Configuration

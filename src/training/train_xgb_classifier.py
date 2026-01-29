@@ -25,11 +25,19 @@ sys.path.insert(0, project_root)
 from config.configurator import load_config, setup_environment
 from src.training.utils.classification_metrics import (
     compute_classification_metrics,
+    compute_anomaly_metrics,
+    compute_intention_detection_metrics,
     print_classification_report,
     plot_confusion_matrix,
     plot_roc_curves,
     plot_precision_recall_curves,
     plot_embedding_tsne
+)
+from src.training.utils.threshold_optimizer import (
+    find_optimal_threshold,
+    apply_threshold,
+    plot_threshold_analysis,
+    compute_metrics_at_threshold
 )
 
 import utils.logging_config as logconf
@@ -184,12 +192,14 @@ def evaluate_classifier(
     clf: XGBClassifier,
     X: np.ndarray,
     y: np.ndarray,
-    split_name: str = "Test"
+    split_name: str = "Test",
+    include_anomaly_metrics: bool = True
 ) -> dict:
-    """Evaluate classifier and return metrics."""
+    """Evaluate classifier and return metrics including anomaly-focused metrics."""
     y_pred = clf.predict(X)
     y_proba = clf.predict_proba(X)
 
+    # Standard metrics
     metrics = compute_classification_metrics(
         y_true=y,
         y_pred=y_pred,
@@ -203,6 +213,39 @@ def evaluate_classifier(
     logger.info(f"  F1 Weighted: {metrics['f1_weighted']:.4f}")
     if 'roc_auc_macro' in metrics:
         logger.info(f"  ROC-AUC Macro: {metrics['roc_auc_macro']:.4f}")
+
+    # Anomaly-focused metrics for imbalanced data
+    if include_anomaly_metrics:
+        anomaly_metrics = compute_anomaly_metrics(
+            y_true=y,
+            y_pred=y_pred,
+            y_proba=y_proba,
+            class_names=CLASS_NAMES,
+            noise_class=0
+        )
+        metrics.update({f'anomaly_{k}': v for k, v in anomaly_metrics.items()})
+
+        intention_metrics = compute_intention_detection_metrics(
+            y_true=y,
+            y_pred=y_pred,
+            y_proba=y_proba,
+            noise_class=0
+        )
+        metrics.update({f'intention_{k}': v for k, v in intention_metrics.items()})
+
+        logger.info(f"  --- Anomaly/Imbalanced Metrics ---")
+        logger.info(f"  MCC: {anomaly_metrics['mcc']:.4f}")
+        logger.info(f"  Balanced Accuracy: {anomaly_metrics['balanced_accuracy']:.4f}")
+        logger.info(f"  G-Mean: {anomaly_metrics['g_mean']:.4f}")
+        logger.info(f"  Minority F1: {anomaly_metrics['minority_f1']:.4f}")
+        if 'minority_ap' in anomaly_metrics:
+            logger.info(f"  Minority AP: {anomaly_metrics['minority_ap']:.4f}")
+        logger.info(f"  --- Intention Detection ---")
+        logger.info(f"  Detection Precision: {intention_metrics['detection_precision']:.4f}")
+        logger.info(f"  Detection Recall: {intention_metrics['detection_recall']:.4f}")
+        logger.info(f"  Detection F1: {intention_metrics['detection_f1']:.4f}")
+        if intention_metrics['detection_ap'] is not None:
+            logger.info(f"  Detection AP: {intention_metrics['detection_ap']:.4f}")
 
     return metrics
 
@@ -272,6 +315,34 @@ def generate_plots(
     plot_precision_recall_curves(y_test, y_proba, CLASS_NAMES, save_path=pr_path)
     logger.info(f"PR curves saved to: {pr_path}")
 
+    # Threshold analysis plot (for intention detection)
+    try:
+        # Find optimal threshold for F1
+        threshold_result = find_optimal_threshold(
+            y_test, y_proba, target_metric='f1', noise_class=0
+        )
+        optimal_threshold = threshold_result['threshold']
+
+        threshold_path = os.path.join(output_dir, 'threshold_analysis.png')
+        plot_threshold_analysis(
+            y_test, y_proba,
+            optimal_threshold=optimal_threshold,
+            noise_class=0,
+            save_path=threshold_path
+        )
+        logger.info(f"Threshold analysis saved to: {threshold_path}")
+        logger.info(f"Optimal threshold (F1): {optimal_threshold:.3f} "
+                    f"(P={threshold_result['precision']:.3f}, R={threshold_result['recall']:.3f})")
+
+        # Also find high-recall threshold
+        high_recall_result = find_optimal_threshold(
+            y_test, y_proba, target_metric='recall', target_value=0.95, noise_class=0
+        )
+        logger.info(f"High-recall threshold (R>=95%): {high_recall_result['threshold']:.3f} "
+                    f"(P={high_recall_result['precision']:.3f}, R={high_recall_result['recall']:.3f})")
+    except Exception as e:
+        logger.warning(f"Could not generate threshold analysis: {e}")
+
     # t-SNE visualization (on test set or combined)
     if X_all is not None and y_all is not None:
         # Sample if too large
@@ -295,7 +366,8 @@ def hyperparameter_search(
     X_val: np.ndarray,
     y_val: np.ndarray,
     n_trials: int = 50,
-    seed: int = 42
+    seed: int = 42,
+    optimize_for: str = 'minority_f1'
 ) -> dict:
     """
     Perform hyperparameter search using Optuna.
@@ -305,6 +377,11 @@ def hyperparameter_search(
         X_val, y_val: Validation data
         n_trials: Number of Optuna trials
         seed: Random seed
+        optimize_for: Metric to optimize:
+            - 'minority_f1': Average F1 of minority classes (upward, downward)
+            - 'intention_ap': Average Precision for intention detection
+            - 'f1_macro': Standard macro F1 (original behavior)
+            - 'mcc': Matthews Correlation Coefficient
 
     Returns:
         Best hyperparameters dictionary
@@ -317,6 +394,7 @@ def hyperparameter_search(
         raise
 
     logger.info(f"Starting hyperparameter search with {n_trials} trials...")
+    logger.info(f"Optimizing for: {optimize_for}")
 
     # Compute sample weights for balanced training
     sample_weights = compute_balanced_sample_weights(y_train)
@@ -328,6 +406,7 @@ def hyperparameter_search(
             'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
             'subsample': trial.suggest_float('subsample', 0.6, 1.0),
             'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
             'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 10.0, log=True),
             'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 10.0, log=True),
         }
@@ -351,14 +430,34 @@ def hyperparameter_search(
         )
 
         y_pred = clf.predict(X_val)
-        from sklearn.metrics import f1_score
-        return f1_score(y_val, y_pred, average='macro')
+        y_proba = clf.predict_proba(X_val)
+
+        if optimize_for == 'minority_f1':
+            # Average F1 of minority classes (classes 1 and 2)
+            from sklearn.metrics import f1_score
+            f1_per_class = f1_score(y_val, y_pred, average=None, zero_division=0)
+            return (f1_per_class[1] + f1_per_class[2]) / 2
+
+        elif optimize_for == 'intention_ap':
+            # Average Precision for intention detection (noise vs intention)
+            from sklearn.metrics import average_precision_score
+            y_val_binary = (y_val > 0).astype(int)
+            p_intention = y_proba[:, 1] + y_proba[:, 2]
+            return average_precision_score(y_val_binary, p_intention)
+
+        elif optimize_for == 'mcc':
+            from sklearn.metrics import matthews_corrcoef
+            return matthews_corrcoef(y_val, y_pred)
+
+        else:  # f1_macro (original)
+            from sklearn.metrics import f1_score
+            return f1_score(y_val, y_pred, average='macro')
 
     sampler = TPESampler(seed=seed)
     study = optuna.create_study(direction='maximize', sampler=sampler)
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
 
-    logger.info(f"Best trial F1 score: {study.best_trial.value:.4f}")
+    logger.info(f"Best trial {optimize_for} score: {study.best_trial.value:.4f}")
     logger.info(f"Best parameters: {study.best_trial.params}")
 
     # Add early_stopping_rounds to best params
@@ -482,6 +581,25 @@ def print_summary(train_metrics, val_metrics, test_metrics, output_dir):
 
     if 'roc_auc_macro' in test_metrics:
         print(f"\nROC-AUC (Macro): {test_metrics['roc_auc_macro']:.4f}")
+
+    # Anomaly/Imbalanced metrics
+    if 'anomaly_mcc' in test_metrics:
+        print("\n--- Imbalanced/Anomaly Metrics (Test) ---")
+        print(f"  MCC: {test_metrics['anomaly_mcc']:.4f}")
+        print(f"  Balanced Accuracy: {test_metrics['anomaly_balanced_accuracy']:.4f}")
+        print(f"  G-Mean: {test_metrics['anomaly_g_mean']:.4f}")
+        print(f"  Minority F1: {test_metrics['anomaly_minority_f1']:.4f}")
+        if 'anomaly_minority_ap' in test_metrics:
+            print(f"  Minority AP: {test_metrics['anomaly_minority_ap']:.4f}")
+
+    # Intention detection metrics
+    if 'intention_detection_f1' in test_metrics:
+        print("\n--- Intention Detection (Test) ---")
+        print(f"  Precision: {test_metrics['intention_detection_precision']:.4f}")
+        print(f"  Recall: {test_metrics['intention_detection_recall']:.4f}")
+        print(f"  F1: {test_metrics['intention_detection_f1']:.4f}")
+        if test_metrics.get('intention_detection_ap') is not None:
+            print(f"  AP: {test_metrics['intention_detection_ap']:.4f}")
 
     print(f"\nResults saved to: {output_dir}")
     print("=" * 60)
