@@ -52,13 +52,18 @@ def create_model(config):
     if num_classes > 0:
         logger.info(f"Joint training enabled: classification_weight={classification_weight}")
 
+    # Input dimensions after adapter transpose: [B, C, Pulses, Depth]
+    # Transpose preserves temporal resolution through encoder pooling
+    input_pulses = config.preprocess.tokenization.window  # H dimension (temporal)
+    input_depth = 130  # W dimension (spatial, after decimation)
+
     if model_type == "CNNAutoencoder":
         from src.models.cnn_ae import CNNAutoencoder
 
         model = CNNAutoencoder(
             in_channels=3,
-            input_height=130,
-            input_width=config.preprocess.tokenization.window,
+            input_height=input_pulses,  # Pulses (temporal)
+            input_width=input_depth,     # Depth (spatial)
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
             use_batchnorm=use_batchnorm,
@@ -69,8 +74,8 @@ def create_model(config):
 
         model = UNetAutoencoder(
             in_channels=3,
-            input_height=130,
-            input_width=config.preprocess.tokenization.window,
+            input_height=input_pulses,  # Pulses (temporal)
+            input_width=input_depth,     # Depth (spatial)
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
             use_batchnorm=use_batchnorm,

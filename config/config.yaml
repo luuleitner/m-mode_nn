@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride02_Labels_soft/latest"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/latest"
 
 
 # ========================================
@@ -199,7 +199,7 @@ ml:
   # Model Architecture
   model:
     type: "UNetAutoencoder"           # "CNNAutoencoder", "UNetAutoencoder", "TransformerAutoencoder"
-    channels_per_layer: [32, 64, 128, 256]  # 4 levels for U-Net
+    channels_per_layer: [32, 64, 128]       # 3 levels (preserves temporal dim=2 at bottleneck)
     embedding_dim: 512                # Less aggressive compression
     num_heads: 8                   # For transformer models
     num_layers: 4                  # For transformer models
