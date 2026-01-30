@@ -28,10 +28,9 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from preprocessing.signal_utils import apply_joystick_filters
-from preprocessing.label_logic.labeling import (
-    create_derivative_labels,
-    create_edge_to_peak_labels,
-    create_edge_to_derivative_labels
+from preprocessing.label_logic.label_logic import (
+    create_position_peak_labels,
+    create_5class_position_peak_labels
 )
 from preprocessing.processor import DataProcessor
 
@@ -62,20 +61,25 @@ def create_labels_visualize_style(joystick_data, label_config):
     derivative = np.gradient(filtered_data)
     derivative = apply_joystick_filters(derivative, filters_config, 'derivative')
 
-    # Create labels
-    if label_method == 'edge_to_peak':
-        labels, threshold, markers = create_edge_to_peak_labels(filtered_data, derivative, threshold_percent)
-    elif label_method == 'edge_to_derivative':
-        labels, pos_thresh, deriv_thresh, markers = create_edge_to_derivative_labels(filtered_data, derivative, threshold_percent)
-    else:
-        labels, threshold = create_derivative_labels(derivative, threshold_percent)
+    # Get position_peak config
+    pp_config = label_config.get('position_peak', {})
+    deriv_thresh = pp_config.get('deriv_threshold_percent', 10.0)
+    pos_thresh = pp_config.get('pos_threshold_percent', 5.0)
+    peak_window = pp_config.get('peak_window', 3)
+    timeout = pp_config.get('timeout_samples', 500)
+
+    # Create labels using position_peak
+    labels, thresholds, markers = create_position_peak_labels(
+        filtered_data, derivative,
+        deriv_thresh, pos_thresh, peak_window, timeout
+    )
 
     return {
         'labels': labels,
         'joystick_column': joystick_column,
         'axis_name': label_axis.upper(),
-        'method': label_method,
-        'threshold_percent': threshold_percent,
+        'method': 'position_peak',
+        'thresholds': thresholds,
         'filtered_data': filtered_data,
         'derivative': derivative
     }
@@ -83,14 +87,12 @@ def create_labels_visualize_style(joystick_data, label_config):
 
 def create_labels_processor_style(joystick_data, label_config):
     """
-    Create labels the way data_visualization_raw-processed.py / processor.py does it.
-    Now uses the same label_config.yaml as visualize.py.
+    Create labels the way processor.py does it.
+    Uses position_peak method from label_config.yaml.
     """
     label_axis = label_config.get('axis', 'x')
     joystick_column = 1 if label_axis == 'x' else 2
     filters_config = label_config.get('filters', {})
-    label_method = label_config.get('method', 'derivative')
-    threshold_percent = label_config.get('threshold_percent', 5.0)
 
     # Get raw data
     raw_data = joystick_data[:, joystick_column]
@@ -100,20 +102,25 @@ def create_labels_processor_style(joystick_data, label_config):
     derivative = np.gradient(filtered_data)
     derivative = apply_joystick_filters(derivative, filters_config, 'derivative')
 
-    # Create labels
-    if label_method == 'edge_to_peak':
-        labels, threshold, markers = create_edge_to_peak_labels(filtered_data, derivative, threshold_percent)
-    elif label_method == 'edge_to_derivative':
-        labels, pos_thresh, deriv_thresh, markers = create_edge_to_derivative_labels(filtered_data, derivative, threshold_percent)
-    else:
-        labels, threshold = create_derivative_labels(derivative, threshold_percent)
+    # Get position_peak config
+    pp_config = label_config.get('position_peak', {})
+    deriv_thresh = pp_config.get('deriv_threshold_percent', 10.0)
+    pos_thresh = pp_config.get('pos_threshold_percent', 5.0)
+    peak_window = pp_config.get('peak_window', 3)
+    timeout = pp_config.get('timeout_samples', 500)
+
+    # Create labels using position_peak
+    labels, thresholds, markers = create_position_peak_labels(
+        filtered_data, derivative,
+        deriv_thresh, pos_thresh, peak_window, timeout
+    )
 
     return {
         'labels': labels,
         'joystick_column': joystick_column,
         'axis_name': label_axis.upper(),
-        'method': label_method,
-        'threshold_percent': threshold_percent,
+        'method': 'position_peak',
+        'thresholds': thresholds,
         'filtered_data': filtered_data,
         'derivative': derivative
     }

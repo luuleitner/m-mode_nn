@@ -308,8 +308,9 @@ class DirectClassifierTrainer:
             data = batch[0].to(self.device)
             labels = batch[1]
 
-        # Transpose: [B, C, Depth, Pulses] -> [B, C, Pulses, Depth]
-        data = data.permute(0, 1, 3, 2)
+        # Data is already in (B, C, Depth, Pulses) = (B, 3, 130, 10) format
+        # This matches DirectCNNClassifier's expected input format (USMModeCNN-style)
+        # No transpose needed
 
         # Handle soft labels
         if labels.dim() > 1 and labels.shape[-1] > 1:

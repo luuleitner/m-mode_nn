@@ -38,7 +38,7 @@ classes:
 # --------------------------------------------------
 # LABELING METHOD & PARAMETERS
 # --------------------------------------------------
-method: "position_peak"         # position_peak (deprecated:derivative | edge_to_peak | edge_to_derivative)
+method: "position_peak"         # position_peak is the only supported method
 axis: "dual"                    # x | y | dual
 
 # Axis modes:

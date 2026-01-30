@@ -31,7 +31,7 @@ import plotly.io as pio
 pio.renderers.default = 'browser'
 
 # Add project root to path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
 from preprocessing.processor import DataProcessor
@@ -276,7 +276,7 @@ def create_visualization(exp_path, data):
     info_lines = [
         f"<b>Session:</b> {session_name}  |  <b>Exp:</b> {exp_num}",
         f"<b>Processing:</b> {' → '.join(processing_parts)}",
-        f"<b>Labels:</b> {config_info['label_method']} (axis={config_info['label_axis']}, thresh={config_info['label_threshold']}%)",
+        f"<b>Labels:</b> {config_info['label_method']} (axis={config_info['label_axis']}, pos={config_info.get('pp_pos_thresh', 'N/A')}%, deriv={config_info.get('pp_deriv_thresh', 'N/A')}%)",
         f"<b>Shapes:</b> Raw {raw_us.shape} → Proc {processed_us.shape} | Joy {joystick.shape} | Labels {labels.shape}"
     ]
     fig.add_annotation(
