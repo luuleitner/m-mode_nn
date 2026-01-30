@@ -31,7 +31,8 @@ from preprocessing.signal_utils import apply_joystick_filters
 from preprocessing.label_logic.labeling import (
     create_derivative_labels,
     create_edge_to_peak_labels,
-    create_edge_to_derivative_labels
+    create_edge_to_derivative_labels,
+    create_5class_labels_dual_axis
 )
 
 # Load label config
@@ -54,23 +55,28 @@ label_method = label_config.get('method', 'derivative')
 threshold_percent = label_config.get('threshold_percent', 5.0)
 label_axis = label_config.get('axis', 'x')
 
+# Class configuration (centralized)
+classes_config = label_config.get('classes', {})
+num_classes = classes_config.get('num_classes', 3)
+class_names = classes_config.get('names', {0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'})
+class_colors = classes_config.get('colors', {})
+
 # Display settings
 display_config = label_config.get('display', {})
 show_raw_trace = display_config.get('show_raw_trace', False)
 
 
 def find_all_experiments():
-    """Find all experiment paths in the raw data directory."""
+    """Find all experiment paths in the raw data directory (recursive search)."""
     experiments = []
-    session_dirs = glob.glob(os.path.join(base_path, "session*"))
 
-    for session_dir in session_dirs:
-        exp_dirs = glob.glob(os.path.join(session_dir, "*"))
-        for exp_dir in exp_dirs:
-            if os.path.isdir(exp_dir) and os.path.basename(exp_dir).isdigit():
-                joystick_file = os.path.join(exp_dir, "_joystick.npy")
-                if os.path.exists(joystick_file):
-                    experiments.append(exp_dir)
+    # Recursively find all _joystick.npy files
+    pattern = os.path.join(base_path, "**", "_joystick.npy")
+    joystick_files = glob.glob(pattern, recursive=True)
+
+    for joystick_file in joystick_files:
+        exp_dir = os.path.dirname(joystick_file)
+        experiments.append(exp_dir)
 
     return sorted(experiments)
 
@@ -88,7 +94,11 @@ def select_random_experiment(seed=None):
 def find_label_regions(labels, label_values=None):
     """Find contiguous regions for each label value."""
     if label_values is None:
-        label_values = [1, 2]
+        # Auto-detect: use 5-class if labels contain values > 2
+        if np.max(labels) > 2:
+            label_values = [1, 2, 3, 4]  # Skip 0 (noise)
+        else:
+            label_values = [1, 2]
 
     regions = {}
     for label_val in label_values:
@@ -101,12 +111,8 @@ def find_label_regions(labels, label_values=None):
     return regions
 
 
-def calculate_window_statistics(label_regions):
+def calculate_window_statistics(label_regions, is_5class=False):
     """Calculate mean and median window widths for labeled regions."""
-    up_widths = [end - start for start, end in label_regions.get(1, [])]
-    down_widths = [end - start for start, end in label_regions.get(2, [])]
-    all_widths = up_widths + down_widths
-
     def compute_stats(widths):
         if len(widths) == 0:
             return {'mean': 0.0, 'median': 0.0, 'count': 0}
@@ -116,11 +122,32 @@ def calculate_window_statistics(label_regions):
             'count': len(widths)
         }
 
-    return {
-        'overall': compute_stats(all_widths),
-        'up': compute_stats(up_widths),
-        'down': compute_stats(down_widths)
-    }
+    if is_5class:
+        # 5-class: 1=up, 2=down, 3=left, 4=right
+        up_widths = [end - start for start, end in label_regions.get(1, [])]
+        down_widths = [end - start for start, end in label_regions.get(2, [])]
+        left_widths = [end - start for start, end in label_regions.get(3, [])]
+        right_widths = [end - start for start, end in label_regions.get(4, [])]
+        all_widths = up_widths + down_widths + left_widths + right_widths
+
+        return {
+            'overall': compute_stats(all_widths),
+            'up': compute_stats(up_widths),
+            'down': compute_stats(down_widths),
+            'left': compute_stats(left_widths),
+            'right': compute_stats(right_widths)
+        }
+    else:
+        # 3-class: 1=positive, 2=negative
+        up_widths = [end - start for start, end in label_regions.get(1, [])]
+        down_widths = [end - start for start, end in label_regions.get(2, [])]
+        all_widths = up_widths + down_widths
+
+        return {
+            'overall': compute_stats(all_widths),
+            'positive': compute_stats(up_widths),
+            'negative': compute_stats(down_widths)
+        }
 
 
 def plot_single_experiment(exp_path):
@@ -130,6 +157,8 @@ def plot_single_experiment(exp_path):
     Layout:
     - Row 1: X axis (position + derivative + label regions)
     - Row 2: Y axis (position + derivative + label regions)
+
+    When axis='dual', 5-class labels are computed once and shown in both rows.
     """
     joystick_file = os.path.join(exp_path, "_joystick.npy")
     if not os.path.exists(joystick_file):
@@ -147,8 +176,11 @@ def plot_single_experiment(exp_path):
     exp_num = os.path.basename(exp_path)
     exp_name = f"{session_name}/{exp_num}"
 
-    # Build subplot titles
-    subplot_titles = [f"{exp_name} - Joystick {coord_name}" for _, coord_name in coordinates]
+    # Build subplot titles with direction labels
+    subplot_titles = [
+        f"{exp_name} - Joystick X (LEFT/RIGHT)",
+        f"{exp_name} - Joystick Y (UP/DOWN)"
+    ]
 
     # Create subplots with secondary y-axis for each row
     fig = make_subplots(
@@ -159,29 +191,99 @@ def plot_single_experiment(exp_path):
         subplot_titles=subplot_titles
     )
 
-    # Collect statistics for printing
-    all_stats = {}
+    # Pre-compute filtered data and derivatives for both axes
+    x_raw = joystick_data[:, 1]
+    y_raw = joystick_data[:, 2]
+    x_filtered = apply_joystick_filters(x_raw.copy(), filters_config, 'position')
+    y_filtered = apply_joystick_filters(y_raw.copy(), filters_config, 'position')
+    x_derivative = apply_joystick_filters(np.gradient(x_filtered), filters_config, 'derivative')
+    y_derivative = apply_joystick_filters(np.gradient(y_filtered), filters_config, 'derivative')
 
+    # Determine if using 5-class dual-axis mode
+    is_dual_axis = (label_axis == 'dual')
+
+    # Label colors from config (convert string keys to int)
+    label_colors = {int(k): v for k, v in class_colors.items()} if class_colors else {
+        0: 'rgba(128, 128, 128, 0.3)',   # Noise - gray
+        1: 'rgba(0, 200, 0, 0.4)',       # Up - green
+        2: 'rgba(200, 0, 0, 0.4)',       # Down - red
+        3: 'rgba(0, 100, 255, 0.4)',     # Left - blue
+        4: 'rgba(255, 165, 0, 0.4)',     # Right - orange
+    }
+    # Class names from config (convert string keys to int)
+    label_names = {int(k): v for k, v in class_names.items()} if class_names else {
+        0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'
+    }
+
+    # Compute labels based on mode
+    if is_dual_axis:
+        # 5-class: apply edge_to_derivative to both axes, then merge with amplitude voting
+        dual_labels, thresholds, dual_markers = create_5class_labels_dual_axis(
+            x_filtered, y_filtered, x_derivative, y_derivative, threshold_percent
+        )
+        dual_label_regions = find_label_regions(dual_labels)
+        all_stats = {'dual': calculate_window_statistics(dual_label_regions, is_5class=True)}
+
+        # Debug output
+        unique, counts = np.unique(dual_labels, return_counts=True)
+        print(f"\n[DEBUG] 5-class labels: unique={dict(zip(unique, counts))}")
+        print(f"[DEBUG] Thresholds: x_pos={thresholds['x_pos']:.4f}, y_pos={thresholds['y_pos']:.4f}")
+        print(f"[DEBUG] Regions found: {[(k, len(v)) for k, v in dual_label_regions.items()]}")
+
+        # Add label shading to BOTH rows using shapes
+        # Axis refs: row1 -> x, y/y2; row2 -> x2, y3/y4
+        vrect_count = 0
+        for row in [1, 2]:
+            xref = "x" if row == 1 else "x2"
+            yref = "y domain" if row == 1 else "y3 domain"
+            for label_val, regions in dual_label_regions.items():
+                color = label_colors.get(label_val, 'rgba(128, 128, 128, 0.3)')
+                for start, end in regions:
+                    fig.add_shape(
+                        type="rect",
+                        x0=start, x1=end,
+                        y0=0, y1=1,
+                        xref=xref, yref=yref,
+                        fillcolor=color,
+                        layer="below",
+                        line_width=0,
+                    )
+                    vrect_count += 1
+        print(f"[DEBUG] Added {vrect_count} shapes total")
+
+        # Add legend entries for label colors (dummy traces, skip noise class 0)
+        for label_val in range(1, num_classes):
+            label_name = label_names.get(label_val, f'Class {label_val}')
+            color = label_colors.get(label_val, 'rgba(128, 128, 128, 0.4)')
+            fig.add_trace(
+                go.Scatter(
+                    x=[None], y=[None],
+                    mode='markers',
+                    marker=dict(size=15, color=color, symbol='square'),
+                    name=f'Label: {label_name}',
+                    legendgroup=f'label_{label_val}',
+                    showlegend=True
+                ),
+                row=1, col=1
+            )
+    else:
+        all_stats = {}
+
+    # Plot each axis
     for coord_idx, (col, col_name) in enumerate(coordinates):
         row = coord_idx + 1
         is_first_row = (row == 1)
 
         raw_data = joystick_data[:, col]
-
-        # Apply filters to position data
-        data = apply_joystick_filters(raw_data.copy(), filters_config, 'position')
-
-        derivative = np.gradient(data)
-
-        # Apply filters to derivative
-        derivative = apply_joystick_filters(derivative, filters_config, 'derivative')
-
+        data = x_filtered if col == 1 else y_filtered
+        derivative = x_derivative if col == 1 else y_derivative
         x_vals = np.arange(len(data))
 
-        # Compute labels using configured method
+        # Compute per-axis labels and markers (always needed for visualization)
         markers = None
         threshold = None
         deriv_threshold = None
+
         if label_method == 'edge_to_peak':
             labels, threshold, markers = create_edge_to_peak_labels(data, derivative, threshold_percent)
         elif label_method == 'edge_to_derivative':
@@ -189,23 +291,21 @@ def plot_single_experiment(exp_path):
         else:  # default: 'derivative'
             labels, threshold = create_derivative_labels(derivative, threshold_percent)
 
-        # Shade regions based on labels
-        label_regions = find_label_regions(labels)
+        # For single-axis mode, shade regions and compute stats per axis
+        if not is_dual_axis:
+            label_regions = find_label_regions(labels)
+            all_stats[col_name] = calculate_window_statistics(label_regions, is_5class=False)
 
-        # Store statistics
-        all_stats[col_name] = calculate_window_statistics(label_regions)
-
-        label_colors = {1: 'rgba(144, 238, 144, 0.3)', 2: 'rgba(240, 128, 128, 0.3)'}
-        for label_val, regions in label_regions.items():
-            color = label_colors.get(label_val, 'rgba(128, 128, 128, 0.3)')
-            for start, end in regions:
-                fig.add_vrect(
-                    x0=start, x1=end,
-                    fillcolor=color,
-                    layer="below",
-                    line_width=0,
-                    row=row, col=1
-                )
+            for label_val, regions in label_regions.items():
+                color = label_colors.get(label_val, 'rgba(128, 128, 128, 0.3)')
+                for start, end in regions:
+                    fig.add_vrect(
+                        x0=start, x1=end,
+                        fillcolor=color,
+                        layer="above",
+                        line_width=0,
+                        row=row, col=1
+                    )
 
         # Plot raw trace in background if enabled
         if show_raw_trace:
@@ -341,9 +441,10 @@ def plot_single_experiment(exp_path):
 
     # Update layout
     fig.update_xaxes(title_text="Sample", row=num_rows, col=1)
+    mode_str = "5-class dual-axis" if is_dual_axis else f"{label_method}"
     fig.update_layout(
         title=dict(
-            text=f"Joystick & Labels - {exp_name} (method: {label_method}, thresh: {threshold_percent}%)",
+            text=f"Joystick & Labels - {exp_name} (mode: {mode_str}, thresh: {threshold_percent}%)",
             font=dict(size=16)
         ),
         height=400 * num_rows,
@@ -356,17 +457,29 @@ def plot_single_experiment(exp_path):
     print(f"\n{'='*60}")
     print(f"Experiment: {exp_name}")
     print(f"Method: {label_method}, Threshold: {threshold_percent}%")
-    print(f"Label axis in config: {label_axis}")
+    print(f"Label axis: {label_axis}")
     print(f"{'='*60}")
     print(f"\nWindow Width Statistics (samples):\n")
 
-    for coord_name in ['X', 'Y']:
-        stats = all_stats[coord_name]
-        print(f"  {coord_name} Coordinate:")
+    if is_dual_axis:
+        # 5-class statistics
+        stats = all_stats['dual']
+        print(f"  5-Class Labels (amplitude voting):")
         print(f"    Overall: mean={stats['overall']['mean']:.1f}, median={stats['overall']['median']:.1f}, count={stats['overall']['count']}")
         print(f"    Up:      mean={stats['up']['mean']:.1f}, median={stats['up']['median']:.1f}, count={stats['up']['count']}")
         print(f"    Down:    mean={stats['down']['mean']:.1f}, median={stats['down']['median']:.1f}, count={stats['down']['count']}")
+        print(f"    Left:    mean={stats['left']['mean']:.1f}, median={stats['left']['median']:.1f}, count={stats['left']['count']}")
+        print(f"    Right:   mean={stats['right']['mean']:.1f}, median={stats['right']['median']:.1f}, count={stats['right']['count']}")
         print()
+    else:
+        # 3-class per-axis statistics
+        for coord_name in ['X', 'Y']:
+            stats = all_stats[coord_name]
+            print(f"  {coord_name} Coordinate:")
+            print(f"    Overall:  mean={stats['overall']['mean']:.1f}, median={stats['overall']['median']:.1f}, count={stats['overall']['count']}")
+            print(f"    Positive: mean={stats['positive']['mean']:.1f}, median={stats['positive']['median']:.1f}, count={stats['positive']['count']}")
+            print(f"    Negative: mean={stats['negative']['mean']:.1f}, median={stats['negative']['median']:.1f}, count={stats['negative']['count']}")
+            print()
 
     return fig
 

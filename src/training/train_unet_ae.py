@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import pickle
+import yaml
 from datetime import datetime
 
 import torch
@@ -47,10 +48,16 @@ def create_model(config):
     # Check if classification is enabled (classification_weight > 0)
     loss_weights = config.get_loss_weights()
     classification_weight = loss_weights.get('classification_weight', 0)
-    num_classes = 3 if classification_weight > 0 else 0
 
-    if num_classes > 0:
-        logger.info(f"Joint training enabled: classification_weight={classification_weight}")
+    # Load num_classes from label config if classification is enabled
+    if classification_weight > 0:
+        label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+        with open(label_config_path) as f:
+            label_config = yaml.safe_load(f)
+        num_classes = label_config['classes']['num_classes']
+        logger.info(f"Joint training enabled: classification_weight={classification_weight}, num_classes={num_classes}")
+    else:
+        num_classes = 0
 
     # Input dimensions after adapter transpose: [B, C, Pulses, Depth]
     # Transpose preserves temporal resolution through encoder pooling

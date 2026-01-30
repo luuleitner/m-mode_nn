@@ -22,6 +22,7 @@ import os
 import sys
 import argparse
 import pickle
+import yaml
 from datetime import datetime
 
 import torch
@@ -46,6 +47,7 @@ sys.path.insert(0, project_root)
 
 from config.configurator import load_config, setup_environment
 from src.models.direct_cnn_classifier import DirectCNNClassifier
+from src.data.datasets import create_filtered_split_datasets
 import utils.logging_config as logconf
 
 logger = logconf.get_logger("TRAIN_DIRECT_CLS")
@@ -58,7 +60,13 @@ except ImportError:
     WANDB_AVAILABLE = False
     logger.warning("wandb not installed. WandB logging disabled.")
 
-CLASS_NAMES = ['noise', 'upward', 'downward']
+# Load class names from centralized config
+_label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+with open(_label_config_path) as _f:
+    _label_config = yaml.safe_load(_f)
+_classes_config = _label_config.get('classes', {})
+CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(_classes_config.get('num_classes', 3))]
+CLASS_COLORS = _classes_config.get('colors', {})
 
 
 def focal_loss(logits, targets, weight=None, gamma=2.0, reduction='mean'):
@@ -131,14 +139,26 @@ class DirectClassifierTrainer:
         # Scheduler config
         self.scheduler_type = train_cfg.lr_scheduler.get('type', 'cosine')
 
-        # Class weights for imbalanced data
+        # Class imbalance handling (class weights and/or focal loss)
         self.class_weights = None
         self.use_weighted_loss = False
-        self.use_focal_loss = True  # Use focal loss by default for imbalanced data
-        self.focal_gamma = 2.0  # Focusing parameter
-        balancing_cfg = getattr(train_cfg, 'class_balancing', None)
-        if balancing_cfg and getattr(balancing_cfg, 'enabled', False):
-            self.use_weighted_loss = True
+        self.use_focal_loss = True  # Default
+        self.focal_gamma = 2.0
+
+        imbalance_cfg = train_cfg.get('imbalance', None) if hasattr(train_cfg, 'get') else getattr(train_cfg, 'imbalance', None)
+        if imbalance_cfg:
+            # Class weights config
+            weights_cfg = imbalance_cfg.get('class_weights', None) if hasattr(imbalance_cfg, 'get') else getattr(imbalance_cfg, 'class_weights', None)
+            if weights_cfg:
+                self.use_weighted_loss = weights_cfg.get('enabled', False) if hasattr(weights_cfg, 'get') else getattr(weights_cfg, 'enabled', False)
+
+            # Focal loss config
+            focal_cfg = imbalance_cfg.get('focal_loss', None) if hasattr(imbalance_cfg, 'get') else getattr(imbalance_cfg, 'focal_loss', None)
+            if focal_cfg:
+                self.use_focal_loss = focal_cfg.get('enabled', True) if hasattr(focal_cfg, 'get') else getattr(focal_cfg, 'enabled', True)
+                self.focal_gamma = focal_cfg.get('gamma', 2.0) if hasattr(focal_cfg, 'get') else getattr(focal_cfg, 'gamma', 2.0)
+
+        logger.info(f"Imbalance config: class_weights={self.use_weighted_loss}, focal_loss={self.use_focal_loss}")
 
         # Early stopping config (use OmegaConf-compatible access)
         es_cfg = train_cfg.get('early_stopping', None) if hasattr(train_cfg, 'get') else getattr(train_cfg, 'early_stopping', None)
@@ -273,11 +293,9 @@ class DirectClassifierTrainer:
 
         # Log to WandB
         if self.use_wandb and self._wandb_run:
-            wandb.log({
-                'class_distribution/noise': class_counts[0].item(),
-                'class_distribution/upward': class_counts[1].item(),
-                'class_distribution/downward': class_counts[2].item(),
-            })
+            class_dist = {f'class_distribution/{CLASS_NAMES[i]}': class_counts[i].item()
+                          for i in range(len(class_counts))}
+            wandb.log(class_dist)
 
         return class_counts
 
@@ -919,7 +937,7 @@ class DirectClassifierTrainer:
 
 
 def load_datasets(config, data_dir=None):
-    """Load train/val/test datasets from pickle."""
+    """Load or create train/val/test datasets."""
     # Use provided data_dir or fall back to config
     if data_dir:
         pickle_path = data_dir
@@ -936,18 +954,42 @@ def load_datasets(config, data_dir=None):
     val_path = os.path.join(pickle_path, 'val_ds.pkl')
     test_path = os.path.join(pickle_path, 'test_ds.pkl')
 
-    for path, name in [(train_path, 'Train'), (val_path, 'Validation'), (test_path, 'Test')]:
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"{name} dataset not found: {path}")
+    # Check if we should load from pickle or create from H5
+    load_from_pickle = config.ml.loading.get('load_data_pickle', True) if hasattr(config.ml.loading, 'get') else getattr(config.ml.loading, 'load_data_pickle', True)
 
-    logger.info(f"Loading datasets from: {pickle_path}")
+    if load_from_pickle:
+        # Load existing pickle files
+        for path, name in [(train_path, 'Train'), (val_path, 'Validation'), (test_path, 'Test')]:
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    f"{name} dataset not found: {path}\n"
+                    "Run 'python -m src.data.precompute_datasets --config config.yaml' first,\n"
+                    "or set 'load_data_pickle: false' in config to create datasets automatically."
+                )
 
-    with open(train_path, 'rb') as f:
-        train_ds = pickle.load(f)
-    with open(val_path, 'rb') as f:
-        val_ds = pickle.load(f)
-    with open(test_path, 'rb') as f:
-        test_ds = pickle.load(f)
+        logger.info(f"Loading datasets from pickle: {pickle_path}")
+        with open(train_path, 'rb') as f:
+            train_ds = pickle.load(f)
+        with open(val_path, 'rb') as f:
+            val_ds = pickle.load(f)
+        with open(test_path, 'rb') as f:
+            test_ds = pickle.load(f)
+    else:
+        # Create datasets from H5 files
+        logger.info("Creating datasets from H5 files...")
+        train_ds, test_ds, val_ds = create_filtered_split_datasets(
+            **config.get_dataset_parameters()
+        )
+
+        # Save for future use
+        logger.info(f"Saving datasets to pickle: {pickle_path}")
+        with open(train_path, 'wb') as f:
+            pickle.dump(train_ds, f)
+        with open(val_path, 'wb') as f:
+            pickle.dump(val_ds, f)
+        with open(test_path, 'wb') as f:
+            pickle.dump(test_ds, f)
+        logger.info("Datasets saved. Set 'load_data_pickle: true' to reuse them.")
 
     logger.info(f"Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
 
@@ -960,8 +1002,6 @@ def main():
     parser.add_argument('--data-dir', '-d', type=str, default=None,
                         help='Directory with train_ds.pkl/val_ds.pkl/test_ds.pkl (overrides config)')
     parser.add_argument('--no-wandb', action='store_true', help='Disable WandB logging')
-    parser.add_argument('--no-focal', action='store_true', help='Disable focal loss (use standard CE)')
-    parser.add_argument('--focal-gamma', type=float, default=2.0, help='Focal loss gamma (default: 2.0)')
     parser.add_argument('--output-dir', '-o', type=str, default=None, help='Output directory')
     parser.add_argument('--restart', '-r', action='store_true', help='Restart from latest checkpoint')
     args = parser.parse_args()
@@ -977,8 +1017,14 @@ def main():
     input_pulses = config.preprocess.tokenization.window  # 10
     input_depth = 130  # After decimation
 
+    # Load label config for class definitions
+    label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+    with open(label_config_path) as f:
+        label_config = yaml.safe_load(f)
+    num_classes = label_config['classes']['num_classes']
+    class_names = label_config['classes']['names']
+
     # Create model
-    num_classes = 3  # noise, upward, downward
     model = DirectCNNClassifier(
         in_channels=3,
         input_pulses=input_pulses,
@@ -1026,10 +1072,6 @@ def main():
         output_dir=output_dir,
         use_wandb=not args.no_wandb
     )
-
-    # Configure focal loss
-    trainer.use_focal_loss = not args.no_focal
-    trainer.focal_gamma = args.focal_gamma
 
     # Train
     history = trainer.train(

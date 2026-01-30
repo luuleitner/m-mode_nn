@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import pickle
+import yaml
 from datetime import datetime
 
 import torch
@@ -40,7 +41,12 @@ import utils.logging_config as logconf
 
 logger = logconf.get_logger("EVAL_CLS")
 
-CLASS_NAMES = ['noise', 'upward', 'downward']
+# Load class names from centralized config
+_label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+with open(_label_config_path) as _f:
+    _label_config = yaml.safe_load(_f)
+_classes_config = _label_config.get('classes', {})
+CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(_classes_config.get('num_classes', 3))]
 
 
 def create_model(config):
@@ -50,7 +56,15 @@ def create_model(config):
     # Check if classification was enabled during training
     loss_weights = config.get_loss_weights()
     classification_weight = loss_weights.get('classification_weight', 0)
-    num_classes = 3 if classification_weight > 0 else 0
+
+    # Load num_classes from label config if classification is enabled
+    if classification_weight > 0:
+        label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+        with open(label_config_path) as f:
+            label_config = yaml.safe_load(f)
+        num_classes = label_config['classes']['num_classes']
+    else:
+        num_classes = 0
 
     # Input dimensions after transpose: [B, C, Pulses, Depth]
     input_pulses = config.preprocess.tokenization.window

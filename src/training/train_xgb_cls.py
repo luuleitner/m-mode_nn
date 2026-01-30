@@ -12,6 +12,7 @@ import os
 import sys
 import argparse
 import json
+import yaml
 from datetime import datetime
 
 import numpy as np
@@ -43,8 +44,12 @@ from src.training.utils.threshold_optimizer import (
 import utils.logging_config as logconf
 logger = logconf.get_logger("CLASSIFIER")
 
-# Default class names for the 3-class problem
-CLASS_NAMES = ['noise', 'upward', 'downward']
+# Load class names from centralized config
+_label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+with open(_label_config_path) as _f:
+    _label_config = yaml.safe_load(_f)
+_classes_config = _label_config.get('classes', {})
+CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(_classes_config.get('num_classes', 3))]
 
 
 def compute_balanced_sample_weights(y: np.ndarray) -> np.ndarray:
