@@ -38,8 +38,7 @@ classes:
 # --------------------------------------------------
 # LABELING METHOD & PARAMETERS
 # --------------------------------------------------
-method: "edge_to_derivative"    # derivative | edge_to_peak | edge_to_derivative
-threshold_percent: 10.0         # percentage of max value for threshold detection
+method: "position_peak"         # position_peak (deprecated:derivative | edge_to_peak | edge_to_derivative)
 axis: "dual"                    # x | y | dual
 
 # Axis modes:
@@ -47,6 +46,19 @@ axis: "dual"                    # x | y | dual
 #   y:    3-class using Y-axis only (0=noise, 1=up, 2=down)
 #   dual: 5-class using both axes with amplitude voting:
 #         0=noise, 1=up, 2=down, 3=left, 4=right
+
+# --------------------------------------------------
+# POSITION PEAK METHOD PARAMETERS
+# --------------------------------------------------
+# Three-phase detection: Start → Peak → Stop
+#   Phase 1: |velocity| > deriv_threshold AND |position| < pos_threshold
+#   Phase 2: position reverses (peak detected)
+#   Phase 3: |velocity| < deriv_threshold
+position_peak:
+  deriv_threshold_percent: 10.0   # velocity threshold as % of max velocity
+  pos_threshold_percent: 5.0      # center zone as % of max position (start must be within this)
+  peak_window: 3                  # samples to confirm position reversal (noise filter)
+  timeout_samples: 500            # max samples per phase before forcing end
 
 # --------------------------------------------------
 # SOFT LABELS (for training)
