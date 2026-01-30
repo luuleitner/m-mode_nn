@@ -36,7 +36,9 @@ class DirectCNNClassifier(nn.Module):
         input_pulses: Temporal dimension / number of pulses (default: 10)
         input_depth: Spatial dimension / depth samples (default: 130)
         num_classes: Number of output classes (default: 3)
-        dropout: Dropout probability (default: 0.3)
+        dropout: Dropout probability for FC head (default: 0.5)
+        spatial_dropout: Dropout2d probability between conv blocks (default: 0.1)
+        use_batchnorm: Kept for API compatibility, always uses batchnorm
     """
 
     def __init__(
@@ -45,7 +47,8 @@ class DirectCNNClassifier(nn.Module):
         input_pulses=10,
         input_depth=130,
         num_classes=3,
-        dropout=0.3,
+        dropout=0.5,
+        spatial_dropout=0.1,
         use_batchnorm=True  # kept for API compatibility, always uses batchnorm
     ):
         super().__init__()
@@ -54,6 +57,11 @@ class DirectCNNClassifier(nn.Module):
         self.input_pulses = input_pulses
         self.input_depth = input_depth
         self.num_classes = num_classes
+        self.spatial_dropout_p = spatial_dropout
+        self.fc_dropout_p = dropout
+
+        # Spatial dropout (applied between conv blocks to regularize feature maps)
+        self.spatial_drop = nn.Dropout2d(spatial_dropout) if spatial_dropout > 0 else nn.Identity()
 
         # Block 1: Preserve temporal, downsample depth
         # Kernel (3,13) with padding (1,6) → same output size
@@ -143,8 +151,11 @@ class DirectCNNClassifier(nn.Module):
             Feature tensor (B, 64)
         """
         x = self.block1(x)
+        x = self.spatial_drop(x)  # Spatial dropout after block 1
         x = self.block2(x)
+        x = self.spatial_drop(x)  # Spatial dropout after block 2
         x = self.block3(x)
+        x = self.spatial_drop(x)  # Spatial dropout after block 3
         x = self.global_pool(x)
         x = x.view(x.size(0), -1)
         return x
@@ -188,6 +199,9 @@ class DirectCNNClassifier(nn.Module):
         print(f"Kernel sizes: Block1={self._dims['kernels']['block1']}, "
               f"Block2={self._dims['kernels']['block2']}, "
               f"Block3={self._dims['kernels']['block3']}")
+        print(f"\nRegularization:")
+        print(f"  Spatial dropout (between blocks): {self.spatial_dropout_p}")
+        print(f"  FC dropout (classifier head):     {self.fc_dropout_p}")
         print(f"\nFeature flow:")
         print(f"  Input:            {self._dims['input']}")
         print(f"  After Block1:     {self._dims['after_block1']}")

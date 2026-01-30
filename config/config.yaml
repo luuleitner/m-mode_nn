@@ -93,7 +93,7 @@ ml:
   # =====================================================================
   # Data Loading
   loading:
-    load_data_pickle: true
+    load_data_pickle: false
   #
   #  ┌─────────────────────────────────────────────────────────────────┐
   #  │  H5 FILES (from preprocessing)                                 │
@@ -181,8 +181,8 @@ ml:
 
     oversample_config:
       method: "mixed"                     # duplicate | augment | mixed
-      target_ratio: 0.3                     # 1.0 = match majority class count
-      augment_ratio: 0.5                    # For 'mixed': ratio of augmented vs duplicated
+      target_ratio: 0.4                     # 1.0 = match majority class count
+      augment_ratio: 0.4                    # For 'mixed': ratio of augmented vs duplicated
 
       # Augmentation settings (semantically preserving transforms)
       augmentations:
@@ -209,7 +209,7 @@ ml:
   # =====================================================================
   classifier:
     type: "XGBoost"
-    class_names: ["noise", "upward", "downward"]
+    class_names: ["noise", "up", "down", "left", "right"]
 
     # XGBoost hyperparameters
     xgboost:
@@ -241,8 +241,8 @@ ml:
   training:
     # Basic Training Parameters
     epochs: 50
-    lr: 0.0003                        # AdamW works well with slightly higher LR
-    weight_decay: 0.01                # Stronger weight decay for AdamW
+    lr: 0.0001                        # Lower LR to reduce overfitting (was 0.0003)
+    weight_decay: 0.02                # Stronger weight decay for regularization (was 0.01)
 
     # Optimizer Configuration
     optimizer:
@@ -266,6 +266,9 @@ ml:
     regularization:
       grad_clip_norm: 1.0            # Gradient clipping norm
       batch_norm: true               # Use batch normalization
+      dropout:
+        spatial: 0.1                 # Dropout2d between conv blocks (0.1-0.2 recommended)
+        fc: 0.5                      # Dropout in FC classifier head (0.3-0.5 recommended)
 
     # Class Imbalance Handling
     # Use ONE or NONE of these - combining both is usually too aggressive
@@ -294,7 +297,7 @@ ml:
     # Early Stopping
     early_stopping:
       enabled: true                  # Enable early stopping
-      patience: 20                   # Epochs to wait for improvement
+      patience: 15                   # Epochs to wait for improvement (was 25)
       min_delta: 0.001               # Minimum change to count as improvement (0.1% for balanced_accuracy)
       monitor: "val_balanced_accuracy"   # Metric to monitor: val_loss, val_accuracy, val_balanced_accuracy
 
