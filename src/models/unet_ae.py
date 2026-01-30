@@ -12,7 +12,26 @@ Supports optional classification head for joint reconstruction + classification 
 import torch
 import torch.nn as nn
 
-from .cnn_ae import ClassificationHead
+
+class ClassificationHead(nn.Module):
+    """
+    MLP classification head for embedding-based classification.
+    """
+
+    def __init__(self, embedding_dim, num_classes=3, hidden_dim=None, dropout=0.3):
+        super().__init__()
+        if hidden_dim is None:
+            hidden_dim = embedding_dim // 2
+
+        self.classifier = nn.Sequential(
+            nn.Linear(embedding_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, num_classes)
+        )
+
+    def forward(self, embedding):
+        return self.classifier(embedding)
 
 
 class EncoderBlock(nn.Module):

@@ -4,8 +4,8 @@ XGBoost Classifier Training
 Train an XGBoost classifier on extracted embeddings for movement classification.
 
 Usage:
-    python -m src.training.train_classifier --config config/config.yaml --embeddings path/to/embeddings.npz
-    python -m src.training.train_classifier --config config/config.yaml --embeddings path/to/embeddings.npz --tune
+    python -m src.training.train_xgb_cls --config config/config.yaml --embeddings path/to/embeddings.npz
+    python -m src.training.train_xgb_cls --config config/config.yaml --embeddings path/to/embeddings.npz --tune
 """
 
 import os

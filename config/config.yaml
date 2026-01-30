@@ -240,7 +240,7 @@ ml:
   # =====================================================================
   training:
     # Basic Training Parameters
-    epochs: 150
+    epochs: 1000
     lr: 0.0003                        # AdamW works well with slightly higher LR
     weight_decay: 0.01                # Stronger weight decay for AdamW
 
@@ -291,8 +291,70 @@ ml:
     early_stopping:
       enabled: true                  # Enable early stopping
       patience: 20                   # Epochs to wait for improvement
-      min_delta: 1e-5                # Minimum change to count as improvement
-      monitor: "val_loss"            # Metric to monitor
+      min_delta: 0.001               # Minimum change to count as improvement (0.1% for balanced_accuracy)
+      monitor: "val_balanced_accuracy"   # Metric to monitor: val_loss, val_accuracy, val_balanced_accuracy
+
+
+# ========================================
+# CROSS-VALIDATION CONFIGURATION
+# ========================================
+# For K-fold cross-validation experiments.
+# Use: python -m src.data.precompute_kfolds --config config/config.yaml
+#
+# This creates multiple fold directories, each with train_ds.pkl, val_ds.pkl, test_ds.pkl
+# The regular precompute_datasets.py creates a single split (non-CV mode).
+#
+cross_validation:
+  output_subdir: "cv_folds"             # Folds saved to: {data_root}/{output_subdir}/fold_X/
+
+  # =========================================
+  # CV STRATEGY (choose one)
+  # =========================================
+  # Options:
+  #   - "experiment_kfold": K-fold over experiments within selected participant(s)
+  #   - "session_loso":     Leave-One-Session-Out
+  #   - "participant_lopo": Leave-One-Participant-Out
+  strategy: "experiment_kfold"
+
+  # =========================================
+  # STRATEGY 1: experiment_kfold
+  # =========================================
+  # K-fold cross-validation over experiments within specific participant(s).
+  # Use case: Evaluate model on same participant(s) with different experiment splits.
+  #
+  # Example: participant_filter=[1], n_folds=5
+  #   Participant 1 has 10 experiments → each fold holds out 2 experiments
+  #
+  experiment_kfold:
+    participant_filter: null            # Which participant(s) to include [1,2] or null=all
+    session_filter: null                # Optionally filter sessions too
+    n_folds: 5                          # Number of folds
+    test_val_split_ratio: 0.5           # Within holdout: 50% test, 50% val
+
+  # =========================================
+  # STRATEGY 2: session_loso
+  # =========================================
+  # Leave-One-Session-Out cross-validation.
+  # Use case: Evaluate generalization across recording sessions.
+  #
+  # Example: 4 sessions → 4 folds, each holds out one session
+  #
+  session_loso:
+    participant_filter: null            # Which participant(s) to include (null=all)
+    session_filter: null                # Which sessions to fold over (null=all available)
+    test_val_split_ratio: 0.5           # Within holdout session: 50% test, 50% val
+
+  # =========================================
+  # STRATEGY 3: participant_lopo
+  # =========================================
+  # Leave-One-Participant-Out cross-validation.
+  # Use case: Evaluate generalization to new participants.
+  #
+  # Example: 3 participants → 3 folds, each holds out one participant
+  #
+  participant_lopo:
+    participant_filter: null            # Which participants to fold over (null=all)
+    test_val_split_ratio: 0.5           # Within holdout participant: 50% test, 50% val
 
 
 # ========================================
@@ -300,7 +362,7 @@ ml:
 # ========================================
 wandb:
   use_wandb: true
-  project: "m-mode_nn_embedding"
+  project: "IEEE SAS 2026"
   api_key: "c1842818a3c8db66c3f75d77b4640749e64cdc0d"
   name: "embedding_autoencoder"
   notes: "1DCNN for dimensionality reduction with comprehensive restart support"

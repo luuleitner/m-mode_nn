@@ -56,18 +56,7 @@ def create_model(config):
     input_pulses = config.preprocess.tokenization.window
     input_depth = 130
 
-    if model_type == "CNNAutoencoder":
-        from src.models.cnn_ae import CNNAutoencoder
-        model = CNNAutoencoder(
-            in_channels=3,
-            input_height=input_pulses,
-            input_width=input_depth,
-            channels=config.ml.model.channels_per_layer,
-            embedding_dim=config.ml.model.embedding_dim,
-            use_batchnorm=True,
-            num_classes=num_classes
-        )
-    elif model_type == "UNetAutoencoder":
+    if model_type == "UNetAutoencoder":
         from src.models.unet_ae import UNetAutoencoder
         model = UNetAutoencoder(
             in_channels=3,

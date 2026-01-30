@@ -27,6 +27,9 @@ class ConfigurationManager:
         # Add experiment section with defaults if missing
         self.experiment = config_dict.get('experiment', self._create_default_experiment())
 
+        # Add cross_validation section (optional, for K-fold CV)
+        self.cross_validation = config_dict.get('cross_validation', None)
+
     def _create_default_experiment(self):
         """Create default experiment configuration"""
         default_experiment = {
