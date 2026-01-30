@@ -21,6 +21,7 @@ import os
 import sys
 import argparse
 import numpy as np
+import yaml
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -32,6 +33,13 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, project_root)
 
 from preprocessing.processor import DataProcessor
+from preprocessing.signal_utils import apply_joystick_filters
+
+# Load label config for joystick filters
+label_config_path = os.path.join(project_root, "preprocessing", "label_logic", "label_config.yaml")
+with open(label_config_path, 'r') as f:
+    label_config = yaml.safe_load(f)
+filters_config = label_config.get('filters', {})
 
 
 # 5-class label colors (fill, border) - low alpha for transparency
@@ -95,20 +103,6 @@ def add_label_regions(fig, labels, row, col, y_max, show_noise=False):
             )
 
 
-def compute_derivative(signal, smooth_window=5):
-    """Compute smoothed derivative of signal."""
-    # Simple smoothing
-    if smooth_window > 1:
-        kernel = np.ones(smooth_window) / smooth_window
-        smoothed = np.convolve(signal, kernel, mode='same')
-    else:
-        smoothed = signal
-
-    # Compute derivative
-    derivative = np.gradient(smoothed)
-    return derivative
-
-
 def create_visualization(exp_path, data):
     """
     Create visualization with 6 rows (single column):
@@ -125,19 +119,26 @@ def create_visualization(exp_path, data):
     depth = processed_us.shape[1]
     n_pulses = processed_us.shape[2]
 
-    # Extract joystick data
-    joy_x = joystick[1, :]  # X axis
-    joy_y = joystick[2, :]  # Y axis
+    # Extract and filter joystick data (same as visualize_labels.py)
+    x_raw = joystick[1, :]  # X axis
+    y_raw = joystick[2, :]  # Y axis
 
-    # Compute derivatives
-    deriv_x = compute_derivative(joy_x)
-    deriv_y = compute_derivative(joy_y)
+    # Apply position filters from label_config.yaml
+    joy_x = apply_joystick_filters(x_raw.copy(), filters_config, 'position')
+    joy_y = apply_joystick_filters(y_raw.copy(), filters_config, 'position')
+
+    # Compute and filter derivatives (same as visualize_labels.py)
+    deriv_x = apply_joystick_filters(np.gradient(joy_x), filters_config, 'derivative')
+    deriv_y = apply_joystick_filters(np.gradient(joy_y), filters_config, 'derivative')
 
     # Normalize derivatives for visualization (scale to similar range as position)
     deriv_scale = max(np.abs(deriv_x).max(), np.abs(deriv_y).max())
     if deriv_scale > 0:
         deriv_x_scaled = deriv_x / deriv_scale * 50  # Scale to ±50 range
         deriv_y_scaled = deriv_y / deriv_scale * 50
+    else:
+        deriv_x_scaled = deriv_x
+        deriv_y_scaled = deriv_y
 
     # Build subplot titles
     subplot_titles = []
