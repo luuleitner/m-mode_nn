@@ -1024,12 +1024,19 @@ def main():
     num_classes = label_config['classes']['num_classes']
     class_names = label_config['classes']['names']
 
+    # Get dropout settings from config
+    dropout_config = config.ml.training.regularization.get('dropout', {})
+    spatial_dropout = dropout_config.get('spatial', 0.1)
+    fc_dropout = dropout_config.get('fc', 0.5)
+
     # Create model
     model = DirectCNNClassifier(
         in_channels=3,
         input_pulses=input_pulses,
         input_depth=input_depth,
-        num_classes=num_classes
+        num_classes=num_classes,
+        dropout=fc_dropout,
+        spatial_dropout=spatial_dropout
     )
 
     model.print_architecture()
