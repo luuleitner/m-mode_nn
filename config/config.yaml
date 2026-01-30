@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/latest"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/run_20260130_135933"
 
 
 # ========================================
@@ -64,7 +64,7 @@ preprocess:
       method: "peakZ"
       minmax_path: "/home/cleitner/code/lab/projects/ML/m-mode_nn/config/minmax_Envdata.csv"
     decimation:
-      apply: true
+      apply: false
       factor: 10                      # 50MSPS -> 5MSPS
 
   tokenization:
@@ -156,7 +156,7 @@ ml:
 
     # --- Option B: RANDOM strategy ---
     # Randomly select experiments for test/val
-    test_val_random_experiments: 0.1        # Count (>=1) or percentage (0-1), e.g., 3 or 0.1 for 10%
+    test_val_random_experiments: 0.2        # Count (>=1) or percentage (0-1), e.g., 3 or 0.1 for 10%
     test_val_multi_session: true            # Prefer experiments from different sessions
 
     # =========================================
@@ -176,12 +176,12 @@ ml:
     # =========================================
     # Two options: dataset-level (oversampling) OR loss-level (weighted loss)
     # For joint AE+classification: use weighted loss to preserve real 90/5/5 distribution
-    balance_classes: false                  # Disabled: using weighted loss instead
+    balance_classes: true                  # Disabled: using weighted loss instead
     balance_strategy: "oversample"          # (unused when balance_classes=false)
 
     oversample_config:
-      method: "augment"                     # duplicate | augment | mixed
-      target_ratio: 1.0                     # 1.0 = match majority class count
+      method: "mixed"                     # duplicate | augment | mixed
+      target_ratio: 0.3                     # 1.0 = match majority class count
       augment_ratio: 0.5                    # For 'mixed': ratio of augmented vs duplicated
 
       # Augmentation settings (semantically preserving transforms)
@@ -240,7 +240,7 @@ ml:
   # =====================================================================
   training:
     # Basic Training Parameters
-    epochs: 1000
+    epochs: 50
     lr: 0.0003                        # AdamW works well with slightly higher LR
     weight_decay: 0.01                # Stronger weight decay for AdamW
 
@@ -267,10 +267,14 @@ ml:
       grad_clip_norm: 1.0            # Gradient clipping norm
       batch_norm: true               # Use batch normalization
 
-    # Class Balancing at Training Time
-    class_balancing:
-      enabled: true                  # Enable weighted loss
-      method: "weighted_loss"        # weighted_loss
+    # Class Imbalance Handling
+    # Use ONE or NONE of these - combining both is usually too aggressive
+    imbalance:
+      class_weights:
+        enabled: true               # Inverse frequency weighting (--no-weights to disable)
+      focal_loss:
+        enabled: false                # Down-weight easy examples (--no-focal to disable)
+        gamma: 1.5                   # Focusing parameter (higher = more focus on hard examples)
 
     # Checkpointing
     checkpointing:

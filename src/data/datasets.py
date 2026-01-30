@@ -1,3 +1,5 @@
+import os
+import yaml
 import torch
 from torch.utils.data import Dataset, DataLoader
 import h5py
@@ -7,6 +9,13 @@ from pathlib import Path
 import random
 from collections import defaultdict, Counter
 from sklearn.model_selection import train_test_split
+
+# Load num_classes from centralized label config
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_label_config_path = os.path.join(_project_root, 'preprocessing/label_logic/label_config.yaml')
+with open(_label_config_path) as _f:
+    _label_config = yaml.safe_load(_f)
+_NUM_CLASSES = _label_config.get('classes', {}).get('num_classes', 3)
 
 from src.data.augmentations import SignalAugmenter
 
@@ -839,7 +848,7 @@ class FilteredSplitH5Dataset(Dataset):
             dict: {class_id: weight} mapping
         """
         if 'label_logic' not in self.metadata.columns:
-            return {0: 1.0, 1: 1.0, 2: 1.0}
+            return {i: 1.0 for i in range(_NUM_CLASSES)}
 
         class_counts = self.metadata['label_logic'].value_counts().to_dict()
         total_samples = len(self.metadata)
@@ -850,8 +859,8 @@ class FilteredSplitH5Dataset(Dataset):
         for cls, count in class_counts.items():
             class_weights[int(cls)] = total_samples / (num_classes * count)
 
-        # Ensure all classes 0, 1, 2 are present
-        for cls in [0, 1, 2]:
+        # Ensure all classes are present (use global _NUM_CLASSES)
+        for cls in range(_NUM_CLASSES):
             if cls not in class_weights:
                 class_weights[cls] = 1.0
 

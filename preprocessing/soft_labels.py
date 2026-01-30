@@ -5,14 +5,14 @@ class SoftLabelGenerator:
     """
     Converts per-sample hard labels into per-token soft label probability distributions.
 
-    Hard labels: [pulses] array with values {0=noise, 1=up, 2=down}
+    Hard labels: [pulses] array with integer class values (0 to num_classes-1)
     Soft labels: [num_tokens, num_classes] float32 probability distributions
     """
 
     def __init__(self, num_classes, weighting="gaussian", gaussian_sigma_ratio=0.25):
         """
         Args:
-            num_classes: Number of label classes (e.g., 3 for noise/up/down)
+            num_classes: Number of label classes (e.g., 5 for noise/up/down/left/right)
             weighting: Weighting scheme for aggregation - "uniform" or "gaussian"
             gaussian_sigma_ratio: For gaussian weighting, sigma = window_size * ratio
         """
@@ -41,6 +41,17 @@ class SoftLabelGenerator:
         if num_tokens <= 0:
             raise ValueError(f"Not enough samples ({num_samples}) for window_size={window_size}")
 
+        # Validate hard labels are within expected range
+        max_label = hard_labels.max()
+        min_label = hard_labels.min()
+        if max_label >= self.num_classes:
+            raise ValueError(
+                f"Hard labels contain class {max_label} but num_classes={self.num_classes}. "
+                f"Labels must be in range [0, {self.num_classes - 1}]"
+            )
+        if min_label < 0:
+            raise ValueError(f"Hard labels contain negative value {min_label}")
+
         weights = self._get_weights(window_size)
         soft_labels = np.zeros((num_tokens, self.num_classes), dtype=np.float32)
 
@@ -51,6 +62,13 @@ class SoftLabelGenerator:
 
             for c in range(self.num_classes):
                 soft_labels[i, c] = np.sum(weights * (window_labels == c))
+
+        # Validate soft labels sum to 1.0 (within floating point tolerance)
+        row_sums = soft_labels.sum(axis=1)
+        if not np.allclose(row_sums, 1.0, atol=1e-5):
+            raise ValueError(
+                f"Soft labels do not sum to 1.0: min={row_sums.min():.6f}, max={row_sums.max():.6f}"
+            )
 
         return soft_labels
 

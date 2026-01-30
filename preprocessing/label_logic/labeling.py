@@ -49,7 +49,11 @@ def get_excluded_experiments(session_name, max_exp=20):
 def create_derivative_labels(derivative, threshold_percent=5.0):
     """
     Create labels from derivative signal based on percentage of max value.
-    Labels array: 0 = neutral (noise), Movement Intention: 1 = upward, 2 = downward
+    Labels array: 0 = neutral (noise), 1 = positive direction, 2 = negative direction
+
+    Note: Direction meaning depends on axis used:
+        - X-axis: 1 = right, 2 = left
+        - Y-axis: 1 = up, 2 = down
     """
     # Calculate threshold as percentage of max absolute value
     max_val = np.max(np.abs(derivative))
@@ -57,8 +61,8 @@ def create_derivative_labels(derivative, threshold_percent=5.0):
 
     # Create labels
     labels = np.zeros(len(derivative), dtype=np.int8)
-    labels[derivative > threshold] = 1   # Upward intention
-    labels[derivative < -threshold] = 2  # Downward intention
+    labels[derivative > threshold] = 1   # Positive direction
+    labels[derivative < -threshold] = 2  # Negative direction
     # Labels remain 0 for neutral/noise zone
 
     return labels, threshold
@@ -69,8 +73,8 @@ def create_edge_to_peak_labels(filtered_data, derivative, threshold_percent=5.0)
     Create labels based on edge detection on raw position and peak finding on derivative.
 
     Algorithm:
-    1. Detect rising edge on filtered position crossing upper threshold (start of upward movement)
-    2. Detect falling edge on filtered position crossing lower threshold (start of downward movement)
+    1. Detect rising edge on filtered position crossing upper threshold (start of positive movement)
+    2. Detect falling edge on filtered position crossing lower threshold (start of negative movement)
     3. Find first derivative peak/trough after each edge (end of movement)
     4. Label region between edge and peak
 
@@ -83,9 +87,13 @@ def create_edge_to_peak_labels(filtered_data, derivative, threshold_percent=5.0)
         threshold_percent: Percentage of max value for threshold detection
 
     Returns:
-        labels: Array of labels (0=noise, 1=upward, 2=downward)
+        labels: Array of labels (0=noise, 1=positive, 2=negative)
         threshold: Position threshold value used for edge detection
         markers: Dict with 'edges' and 'peaks' indices for visualization
+
+    Note: Direction meaning depends on axis used:
+        - X-axis: 1 = right, 2 = left
+        - Y-axis: 1 = up, 2 = down
     """
     n = len(derivative)
     labels = np.zeros(n, dtype=np.int8)
@@ -145,8 +153,8 @@ def create_edge_to_derivative_labels(filtered_data, derivative, threshold_percen
     Create labels based on edge detection on position and derivative threshold crossing.
 
     Algorithm:
-    1. Detect rising edge on filtered position crossing upper threshold (start of upward movement)
-    2. Detect falling edge on filtered position crossing lower threshold (start of downward movement)
+    1. Detect rising edge on filtered position crossing upper threshold (start of positive movement)
+    2. Detect falling edge on filtered position crossing lower threshold (start of negative movement)
     3. Find when derivative crosses back through derivative threshold (end of movement)
     4. Label region between edge and derivative threshold crossing
 
@@ -159,9 +167,13 @@ def create_edge_to_derivative_labels(filtered_data, derivative, threshold_percen
         threshold_percent: Percentage of max value for threshold detection (applied to both signals)
 
     Returns:
-        labels: Array of labels (0=noise, 1=upward, 2=downward)
+        labels: Array of labels (0=noise, 1=positive, 2=negative)
         threshold: Position threshold value used for edge detection
         markers: Dict with 'edge_up', 'edge_down', 'deriv_cross_up', 'deriv_cross_down' indices
+
+    Note: Direction meaning depends on axis used:
+        - X-axis: 1 = right, 2 = left
+        - Y-axis: 1 = up, 2 = down
     """
     n = len(derivative)
     labels = np.zeros(n, dtype=np.int8)
@@ -222,6 +234,85 @@ def create_edge_to_derivative_labels(filtered_data, derivative, threshold_percen
     }
 
     return labels, pos_threshold, deriv_threshold, markers
+
+
+def create_5class_labels_dual_axis(x_filtered, y_filtered, x_derivative, y_derivative, threshold_percent=5.0):
+    """
+    Create 5-class labels using edge_to_derivative method on both axes.
+
+    Pipeline:
+        1. Apply edge_to_derivative to X-axis → labels_x (0=noise, 1=right, 2=left)
+        2. Apply edge_to_derivative to Y-axis → labels_y (0=noise, 1=up, 2=down)
+        3. Merge labels:
+           - Both noise → 0 (noise)
+           - Only X has label → remap to 3=left, 4=right
+           - Only Y has label → use as 1=up, 2=down
+           - Both have labels (overlap) → compare amplitudes, pick dominant
+
+    Label mapping:
+        0: Noise    (no significant movement on either axis)
+        1: Up       (Y+ dominant)
+        2: Down     (Y- dominant)
+        3: Left     (X- dominant)
+        4: Right    (X+ dominant)
+
+    Args:
+        x_filtered: Filtered X-axis position data
+        y_filtered: Filtered Y-axis position data
+        x_derivative: Derivative of filtered X-axis data
+        y_derivative: Derivative of filtered Y-axis data
+        threshold_percent: Percentage of max value for threshold detection
+
+    Returns:
+        labels: Array of 5-class labels
+        thresholds: Dict with 'x' and 'y' threshold values
+        markers: Dict with markers from both axes for visualization
+    """
+    n = len(x_derivative)
+    labels = np.zeros(n, dtype=np.int8)
+
+    # Step 1: Apply edge_to_derivative to both axes independently
+    x_labels, x_pos_thresh, x_deriv_thresh, x_markers = create_edge_to_derivative_labels(
+        x_filtered, x_derivative, threshold_percent
+    )
+    y_labels, y_pos_thresh, y_deriv_thresh, y_markers = create_edge_to_derivative_labels(
+        y_filtered, y_derivative, threshold_percent
+    )
+
+    # Compute per-sample amplitudes for overlap resolution
+    x_amp = np.abs(x_derivative)
+    y_amp = np.abs(y_derivative)
+
+    # Step 2: Merge labels with amplitude voting at overlaps
+    for i in range(n):
+        x_lbl = x_labels[i]
+        y_lbl = y_labels[i]
+
+        if x_lbl == 0 and y_lbl == 0:
+            # Both noise
+            labels[i] = 0
+        elif x_lbl == 0:
+            # Only Y has label: 1=up, 2=down
+            labels[i] = y_lbl
+        elif y_lbl == 0:
+            # Only X has label: remap 1=right→4, 2=left→3
+            labels[i] = 4 if x_lbl == 1 else 3
+        else:
+            # OVERLAP: both axes have labels → amplitude voting
+            if y_amp[i] >= x_amp[i]:
+                # Y dominant: 1=up, 2=down
+                labels[i] = y_lbl
+            else:
+                # X dominant: remap 1=right→4, 2=left→3
+                labels[i] = 4 if x_lbl == 1 else 3
+
+    thresholds = {
+        'x_pos': x_pos_thresh, 'x_deriv': x_deriv_thresh,
+        'y_pos': y_pos_thresh, 'y_deriv': y_deriv_thresh
+    }
+    markers = {'x': x_markers, 'y': y_markers}
+
+    return labels, thresholds, markers
 
 
 def _find_derivative_threshold_crossing(derivative, start_idx, threshold, direction='down'):

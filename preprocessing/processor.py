@@ -20,7 +20,8 @@ from preprocessing.signal_utils import peak_normalization, Z_normalization, butt
 from preprocessing.label_logic.labeling import (
     create_derivative_labels,
     create_edge_to_peak_labels,
-    create_edge_to_derivative_labels
+    create_edge_to_derivative_labels,
+    create_5class_labels_dual_axis
 )
 from preprocessing.soft_labels import SoftLabelGenerator, window_hard_labels
 
@@ -108,8 +109,14 @@ class DataProcessor():
         self._label_config = self._load_label_config()
         self._label_method = self._label_config.get('method', 'derivative')
         self._label_threshold = self._label_config.get('threshold_percent', 5.0)
-        self._label_axis = self._label_config.get('axis', 'x')
+        self._label_axis = self._label_config.get('axis', 'x')  # x | y | dual
         self._joystick_filters = self._label_config.get('filters', {})
+
+        # Class configuration (centralized)
+        classes_config = self._label_config.get('classes', {})
+        self._num_label_classes = classes_config.get('num_classes', 3)
+        self._noise_class = classes_config.get('noise_class', 0)
+        self._class_names = classes_config.get('names', {})
 
         # Soft labels configuration
         soft_labels_config = self._label_config.get('soft_labels', {})
@@ -117,14 +124,12 @@ class DataProcessor():
 
         if self._soft_labels_enabled:
             self._soft_label_gen = SoftLabelGenerator(
-                num_classes=soft_labels_config.get('num_classes', 3),
+                num_classes=self._num_label_classes,
                 weighting=soft_labels_config.get('weighting', 'gaussian'),
                 gaussian_sigma_ratio=soft_labels_config.get('gaussian_sigma_ratio', 0.25)
             )
-            self._num_label_classes = soft_labels_config.get('num_classes', 3)
         else:
             self._soft_label_gen = None
-            self._num_label_classes = 1  # Hard labels
 
         # Saving
         self._save_strategy = self._config.preprocess.data.save_ftype
@@ -678,36 +683,71 @@ class DataProcessor():
         x_position = joystick_data[1, :]
         y_position = joystick_data[2, :]
 
-        # Select axis based on config
-        if self._label_axis == 'x':
-            raw_position = x_position
-        elif self._label_axis == 'y':
-            raw_position = y_position
-        else:  # combined - use X for now, can extend later
-            raw_position = x_position
+        # Dual-axis mode: 5-class labels using amplitude voting
+        if self._label_axis == 'dual':
+            # Apply filters to both axes
+            x_filtered = apply_joystick_filters(
+                x_position.copy(), self._joystick_filters, 'position'
+            )
+            y_filtered = apply_joystick_filters(
+                y_position.copy(), self._joystick_filters, 'position'
+            )
 
-        # Apply filters to position data (same as label_logic/visualize.py)
-        position_data = apply_joystick_filters(
-            raw_position.copy(), self._joystick_filters, 'position'
-        )
+            # Compute derivatives
+            x_derivative = np.gradient(x_filtered)
+            y_derivative = np.gradient(y_filtered)
 
-        # Compute derivative
-        derivative = np.gradient(position_data)
+            # Apply filters to derivatives
+            x_derivative = apply_joystick_filters(
+                x_derivative, self._joystick_filters, 'derivative'
+            )
+            y_derivative = apply_joystick_filters(
+                y_derivative, self._joystick_filters, 'derivative'
+            )
 
-        # Apply filters to derivative
-        derivative = apply_joystick_filters(
-            derivative, self._joystick_filters, 'derivative'
-        )
-
-        # Create per-sample hard labels based on configured method
-        if self._label_method == 'derivative':
-            hard_labels, _ = create_derivative_labels(derivative, self._label_threshold)
-        elif self._label_method == 'edge_to_peak':
-            hard_labels, _, _ = create_edge_to_peak_labels(position_data, derivative, self._label_threshold)
-        elif self._label_method == 'edge_to_derivative':
-            hard_labels, _, _, _ = create_edge_to_derivative_labels(position_data, derivative, self._label_threshold)
+            # Create 5-class labels using edge_to_derivative + amplitude voting
+            hard_labels, _, _ = create_5class_labels_dual_axis(
+                x_filtered, y_filtered, x_derivative, y_derivative, self._label_threshold
+            )
         else:
-            raise ValueError(f"Unknown label method: {self._label_method}")
+            # Single-axis mode: 3-class labels (original behavior)
+            if self._label_axis == 'x':
+                raw_position = x_position
+            elif self._label_axis == 'y':
+                raw_position = y_position
+            else:
+                raw_position = x_position
+
+            # Apply filters to position data (same as label_logic/visualize.py)
+            position_data = apply_joystick_filters(
+                raw_position.copy(), self._joystick_filters, 'position'
+            )
+
+            # Compute derivative
+            derivative = np.gradient(position_data)
+
+            # Apply filters to derivative
+            derivative = apply_joystick_filters(
+                derivative, self._joystick_filters, 'derivative'
+            )
+
+            # Create per-sample hard labels based on configured method
+            if self._label_method == 'derivative':
+                hard_labels, _ = create_derivative_labels(derivative, self._label_threshold)
+            elif self._label_method == 'edge_to_peak':
+                hard_labels, _, _ = create_edge_to_peak_labels(position_data, derivative, self._label_threshold)
+            elif self._label_method == 'edge_to_derivative':
+                hard_labels, _, _, _ = create_edge_to_derivative_labels(position_data, derivative, self._label_threshold)
+            else:
+                raise ValueError(f"Unknown label method: {self._label_method}")
+
+        # Validate label range
+        label_min, label_max = hard_labels.min(), hard_labels.max()
+        if label_min < 0 or label_max >= self._num_label_classes:
+            raise ValueError(
+                f"Invalid label range [{label_min}, {label_max}], "
+                f"expected [0, {self._num_label_classes - 1}]"
+            )
 
         # Convert to token-level labels
         if self._soft_labels_enabled:
@@ -909,7 +949,9 @@ class DataProcessor():
         Create per-sample labels with visualization markers.
 
         Returns:
-            labels: Per-sample label array (0=noise, 1=up, 2=down)
+            labels: Per-sample label array
+                - Single axis: 0=noise, 1=positive, 2=negative
+                - Dual axis: 0=noise, 1=up, 2=down, 3=left, 4=right
             markers: Dict with indices for visualization
         """
         # Handle joystick shape
@@ -920,52 +962,58 @@ class DataProcessor():
         x_position = joystick_data[1, :]
         y_position = joystick_data[2, :]
 
-        if self._label_axis == 'x':
-            raw_position = x_position
-        elif self._label_axis == 'y':
-            raw_position = y_position
-        else:
-            raw_position = x_position
+        # Apply filters to both axes
+        x_filtered = apply_joystick_filters(x_position.copy(), self._joystick_filters, 'position')
+        y_filtered = apply_joystick_filters(y_position.copy(), self._joystick_filters, 'position')
+        x_derivative = apply_joystick_filters(np.gradient(x_filtered), self._joystick_filters, 'derivative')
+        y_derivative = apply_joystick_filters(np.gradient(y_filtered), self._joystick_filters, 'derivative')
 
-        # Apply filters to position data (same as label_logic/visualize.py)
-        position_data = apply_joystick_filters(
-            raw_position.copy(), self._joystick_filters, 'position'
-        )
-
-        # Compute derivative
-        derivative = np.gradient(position_data)
-
-        # Apply filters to derivative
-        derivative = apply_joystick_filters(
-            derivative, self._joystick_filters, 'derivative'
-        )
-
-        # Create labels based on method - preserve markers for visualization
-        if self._label_method == 'derivative':
-            labels, threshold = create_derivative_labels(derivative, self._label_threshold)
+        if self._label_axis == 'dual':
+            # 5-class dual-axis mode
+            labels, thresholds, dual_markers = create_5class_labels_dual_axis(
+                x_filtered, y_filtered, x_derivative, y_derivative, self._label_threshold
+            )
             markers = {
-                'threshold': threshold,
-                'method': 'derivative'
+                'method': 'dual_axis_5class',
+                'x_markers': dual_markers.get('x', {}),
+                'y_markers': dual_markers.get('y', {}),
+                'thresholds': thresholds
             }
-        elif self._label_method == 'edge_to_peak':
-            labels, threshold, markers = create_edge_to_peak_labels(
-                position_data, derivative, self._label_threshold
-            )
-            markers['threshold'] = threshold
-            markers['method'] = 'edge_to_peak'
-        elif self._label_method == 'edge_to_derivative':
-            labels, pos_threshold, deriv_threshold, markers = create_edge_to_derivative_labels(
-                position_data, derivative, self._label_threshold
-            )
-            markers['pos_threshold'] = pos_threshold
-            markers['deriv_threshold'] = deriv_threshold
-            markers['method'] = 'edge_to_derivative'
         else:
-            raise ValueError(f"Unknown label method: {self._label_method}")
+            # Single-axis mode
+            if self._label_axis == 'x':
+                position_data, derivative = x_filtered, x_derivative
+            else:
+                position_data, derivative = y_filtered, y_derivative
+
+            # Create labels based on method - preserve markers for visualization
+            if self._label_method == 'derivative':
+                labels, threshold = create_derivative_labels(derivative, self._label_threshold)
+                markers = {
+                    'threshold': threshold,
+                    'method': 'derivative'
+                }
+            elif self._label_method == 'edge_to_peak':
+                labels, threshold, markers = create_edge_to_peak_labels(
+                    position_data, derivative, self._label_threshold
+                )
+                markers['threshold'] = threshold
+                markers['method'] = 'edge_to_peak'
+            elif self._label_method == 'edge_to_derivative':
+                labels, pos_threshold, deriv_threshold, markers = create_edge_to_derivative_labels(
+                    position_data, derivative, self._label_threshold
+                )
+                markers['pos_threshold'] = pos_threshold
+                markers['deriv_threshold'] = deriv_threshold
+                markers['method'] = 'edge_to_derivative'
+            else:
+                raise ValueError(f"Unknown label method: {self._label_method}")
 
         # Add position and derivative to markers for plotting
-        markers['position'] = position_data
-        markers['derivative'] = derivative
+        markers['x_filtered'] = x_filtered
+        markers['y_filtered'] = y_filtered
+        markers['x_derivative'] = x_derivative
+        markers['y_derivative'] = y_derivative
         markers['x_position'] = x_position
         markers['y_position'] = y_position
 
