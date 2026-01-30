@@ -55,7 +55,7 @@ axis: "dual"                    # x | y | dual
 #   Phase 2: position reverses (peak detected)
 #   Phase 3: |velocity| < deriv_threshold
 position_peak:
-  deriv_threshold_percent: 10.0   # velocity threshold as % of max velocity
+  deriv_threshold_percent: 10.0    # velocity threshold as % of max velocity (lower = wider labels)
   pos_threshold_percent: 5.0      # center zone as % of max position (start must be within this)
   peak_window: 3                  # samples to confirm position reversal (noise filter)
   timeout_samples: 500            # max samples per phase before forcing end

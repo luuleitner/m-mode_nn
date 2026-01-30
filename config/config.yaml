@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/run_20260130_181108"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride01_Labels_soft/run_20260130_211313"
 
 
 # ========================================
@@ -56,6 +56,14 @@ preprocess:
         apply: true
         mode: "constant"
         amount: 30
+      # Anti-aliasing lowpass before decimation
+      lowpass:
+        apply: true
+        mode: "auto"                    # auto | manual
+        # Auto mode: cutoff = 0.8 * (fs / decimation_factor / 2) = 0.4 * fs / D
+        # For D=10: 2 MHz, D=5: 4 MHz, D=2: 10 MHz
+        manual_cutoff: 2e6              # Used only when mode="manual"
+        order: 4
     logcompression:
       apply: true
       db: 45
@@ -65,13 +73,13 @@ preprocess:
       minmax_path: "/home/cleitner/code/lab/projects/ML/m-mode_nn/config/minmax_Envdata.csv"
     decimation:
       apply: true
-      factor: 10                      # 50MSPS -> 5MSPS
+      factor: 2                      # 50MSPS -> 5MSPS
 
   tokenization:
     tokens2file: true
     startendID: false
     window: 10
-    stride: 5
+    stride: 1
     description: "Specifies the tokenization process."
 
   sequencing:
@@ -234,6 +242,28 @@ ml:
       enabled: false
       method: "optuna"                # optuna | grid | random
       n_trials: 50
+
+  # =====================================================================
+  # CNN CLASSIFIER CONFIGURATION (DirectCNNClassifier)
+  # =====================================================================
+  cnn:
+    # Width multiplier: scales channel counts
+    #   1 = 16→32→64 channels,  ~48K params (default, lightweight)
+    #   2 = 32→64→128 channels, ~187K params (recommended, similar to USMModeCNN)
+    #   4 = 64→128→256 channels, ~740K params (large)
+    width_multiplier: 2
+
+    # Kernel scale: scales depth kernels to maintain ~10% receptive field
+    # Match to decimation factor:
+    #   decimation=10 (depth=130):  kernel_scale=1  → kernels (13,3)→(7,3)→(5,3)
+    #   decimation=5  (depth=260):  kernel_scale=2  → kernels (26,3)→(14,3)→(10,3)
+    #   decimation=2  (depth=650):  kernel_scale=5  → kernels (65,3)→(35,3)→(25,3)
+    #   decimation=1  (depth=1300): kernel_scale=10 → kernels (130,3)→(70,3)→(50,3)
+    kernel_scale: 5
+
+    # Regularization
+    dropout: 0.6              # FC head dropout
+    spatial_dropout: 0.2      # Dropout2d between conv blocks
 
   # =====================================================================
   # TRAINING CONFIGURATION

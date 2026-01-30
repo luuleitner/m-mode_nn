@@ -1016,7 +1016,7 @@ def main():
 
     # Input dimensions from config
     input_pulses = config.preprocess.tokenization.window  # 10
-    input_depth = 130  # After decimation
+    # input_depth will be inferred from data after loading
 
     # Load label config for class definitions
     label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
@@ -1025,26 +1025,41 @@ def main():
     num_classes = label_config['classes']['num_classes']
     class_names = label_config['classes']['names']
 
-    # Get dropout settings from config
-    dropout_config = config.ml.training.regularization.get('dropout', {})
-    spatial_dropout = dropout_config.get('spatial', 0.1)
-    fc_dropout = dropout_config.get('fc', 0.5)
+    # Get CNN config
+    cnn_config = config.ml.get('cnn', {})
+    width_multiplier = cnn_config.get('width_multiplier', 1)
+    kernel_scale = cnn_config.get('kernel_scale', 1)
+    spatial_dropout = cnn_config.get('spatial_dropout', 0.1)
+    fc_dropout = cnn_config.get('dropout', 0.5)
 
-    # Create model
+    logger.info(f"CNN config: width_multiplier={width_multiplier}, kernel_scale={kernel_scale}, dropout={fc_dropout}, spatial_dropout={spatial_dropout}")
+
+    # Load datasets first to infer input dimensions
+    data_dir = args.data_dir
+    train_ds, val_ds, test_ds = load_datasets(config, data_dir=data_dir)
+
+    # Infer input_depth from data
+    sample = train_ds[0]
+    if isinstance(sample, dict):
+        sample_shape = sample['tokens'].shape  # (C, Depth, Pulses)
+    else:
+        sample_shape = sample[0].shape
+    input_depth = sample_shape[1]  # Depth dimension
+    logger.info(f"Inferred input_depth={input_depth} from data shape {sample_shape}")
+
+    # Create model with inferred dimensions
     model = DirectCNNClassifier(
         in_channels=3,
         input_pulses=input_pulses,
         input_depth=input_depth,
         num_classes=num_classes,
         dropout=fc_dropout,
-        spatial_dropout=spatial_dropout
+        spatial_dropout=spatial_dropout,
+        width_multiplier=width_multiplier,
+        kernel_scale=kernel_scale
     )
 
     model.print_architecture()
-
-    # Load datasets
-    data_dir = args.data_dir
-    train_ds, val_ds, test_ds = load_datasets(config, data_dir=data_dir)
 
     # Determine output directory
     if args.output_dir:

@@ -7,10 +7,13 @@ Usage:
     python preprocessing/visualization/visualize_labels.py
     python preprocessing/visualization/visualize_labels.py --seed 42
     python preprocessing/visualization/visualize_labels.py --exp-path /vol/data/.../session002/exp000
+    python preprocessing/visualization/visualize_labels.py --config config/config.yaml
+
+Note: Uses processor.get_experiment_paths() for consistent experiment selection
+      with other visualization scripts (same seed = same experiment).
 """
 
 import numpy as np
-import glob
 import os
 import sys
 import argparse
@@ -28,6 +31,7 @@ sys.path.insert(0, project_dir)
 
 from preprocessing.signal_utils import apply_joystick_filters
 from preprocessing.label_logic.label_logic import create_5class_position_peak_labels
+from preprocessing.processor import DataProcessor
 
 # Load configs
 label_config_path = os.path.join(project_dir, "preprocessing", "label_logic", "label_config.yaml")
@@ -39,8 +43,6 @@ with open(main_config_path, 'r') as f:
     main_config = yaml.safe_load(f)
 
 # Paths and settings
-base_data_path = main_config.get('global_setting', {}).get('paths', {}).get('base_data_path', '')
-base_path = os.path.join(base_data_path, 'raw')
 filters_config = label_config.get('filters', {})
 
 # Position peak settings from config
@@ -51,20 +53,15 @@ DEFAULT_PEAK_WINDOW = position_peak_config.get('peak_window', 3)
 DEFAULT_TIMEOUT = position_peak_config.get('timeout_samples', 500)
 
 
-def find_all_experiments():
-    """Find all experiment paths recursively."""
-    pattern = os.path.join(base_path, "**", "_joystick.npy")
-    joystick_files = glob.glob(pattern, recursive=True)
-    return sorted([os.path.dirname(f) for f in joystick_files])
+def select_random_experiment(processor, seed=None):
+    """Select a random experiment from available paths (consistent with other viz scripts)."""
+    paths = processor.get_experiment_paths()
+    if not paths:
+        raise ValueError("No experiments found with current config")
 
-
-def select_random_experiment(seed=None):
-    """Select a random experiment."""
-    experiments = find_all_experiments()
-    if not experiments:
-        raise ValueError(f"No experiments found in {base_path}")
     rng = np.random.default_rng(seed)
-    return rng.choice(experiments)
+    selected = rng.choice(paths)
+    return selected
 
 
 def visualize_labels(exp_path, deriv_threshold_percent=None, pos_threshold_percent=None,
@@ -414,6 +411,8 @@ def visualize_labels(exp_path, deriv_threshold_percent=None, pos_threshold_perce
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize position peak labeling')
+    parser.add_argument('--config', type=str, default='config/config.yaml',
+                        help='Path to config file')
     parser.add_argument('--seed', '-s', type=int, default=None,
                         help='Random seed for experiment selection')
     parser.add_argument('--exp-path', '-e', type=str, default=None,
@@ -430,11 +429,19 @@ def main():
                         help='Save to HTML file instead of showing')
     args = parser.parse_args()
 
+    # Resolve config path
+    config_path = args.config
+    if not os.path.isabs(config_path):
+        config_path = os.path.join(project_dir, config_path)
+
+    # Initialize processor for consistent experiment selection
+    processor = DataProcessor(config_file=config_path, auto_run=False)
+
     # Select experiment
     if args.exp_path:
         exp_path = args.exp_path
     else:
-        exp_path = select_random_experiment(seed=args.seed)
+        exp_path = select_random_experiment(processor, seed=args.seed)
 
     print(f"Selected experiment: {exp_path}")
 

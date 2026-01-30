@@ -16,7 +16,7 @@ from preprocessing.dimension_checker import DimensionChecker
 from config.configurator import load_config, setup_environment
 from preprocessing.visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
-from preprocessing.signal_utils import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, extract_sliding_windows, apply_joystick_filters
+from preprocessing.signal_utils import peak_normalization, Z_normalization, butter_bandpass_filter, butter_lowpass_filter, Time_Gain_Compensation, extract_sliding_windows, apply_joystick_filters
 from preprocessing.label_logic.label_logic import (
     create_position_peak_labels,
     create_5class_position_peak_labels
@@ -41,7 +41,13 @@ class DataProcessor():
 
         # Set Processing Parameters
         # Signal Processing and Flags
-        
+
+        # ---Clipping
+        self._clip_flag = self._config.preprocess.signal.clip.apply
+        self._clip_initial_size = self._config.preprocess.signal.clip.initial_size
+        self._clip_samples2remove_start = self._config.preprocess.signal.clip.samples2remove_start
+        self._clip_samples2remove_end = self._config.preprocess.signal.clip.samples2remove_end
+
         #---Bandpass Filtering
         self._bandpass_flag = self._config.preprocess.signal.bandpass.apply
         self._bandpass_lowcut = self._config.preprocess.signal.bandpass.lowcut
@@ -54,22 +60,29 @@ class DataProcessor():
         self._tgc_fs = self._config.preprocess.signal.tgc.freq
         self._tgc_coef_att = self._config.preprocess.signal.tgc.coef_att
 
-        # ---Clipping
-        self._clip_flag = self._config.preprocess.signal.clip.apply
-        self._clip_initial_size = self._config.preprocess.signal.clip.initial_size
-        self._clip_samples2remove_start = self._config.preprocess.signal.clip.samples2remove_start
-        self._clip_samples2remove_end = self._config.preprocess.signal.clip.samples2remove_end
-
-        #---Decimation
-        self._decimation_flag = self._config.preprocess.signal.decimation.apply
-        self._decimation_factor = self._config.preprocess.signal.decimation.factor
-
         #---Envelope
         self._envelope_flag = self._config.preprocess.signal.envelope.apply
         self._envelope_interp = self._config.preprocess.signal.envelope.interp
         self._envelope_padding_flag = self._config.preprocess.signal.envelope.padding.apply
         self._envelope_padding_mode = self._config.preprocess.signal.envelope.padding.mode
         self._envelope_padding_amount = self._config.preprocess.signal.envelope.padding.amount
+
+        #---Envelope Lowpass (anti-aliasing before decimation)
+        envelope_lp = getattr(self._config.preprocess.signal.envelope, 'lowpass', None)
+        if envelope_lp is not None:
+            self._envelope_lp_flag = getattr(envelope_lp, 'apply', False)
+            self._envelope_lp_mode = getattr(envelope_lp, 'mode', 'auto')
+            self._envelope_lp_manual_cutoff = getattr(envelope_lp, 'manual_cutoff', 2e6)
+            self._envelope_lp_order = getattr(envelope_lp, 'order', 4)
+        else:
+            self._envelope_lp_flag = False
+            self._envelope_lp_mode = 'auto'
+            self._envelope_lp_manual_cutoff = 2e6
+            self._envelope_lp_order = 4
+
+        #---Decimation
+        self._decimation_flag = self._config.preprocess.signal.decimation.apply
+        self._decimation_factor = self._config.preprocess.signal.decimation.factor
 
         #---Log Compression
         self._logcompression_flag = self._config.preprocess.signal.logcompression.apply
@@ -619,6 +632,20 @@ class DataProcessor():
             #                                 pad_amount=self._envelope_padding_amount))
             data = envelope(analytic_signal(data))
 
+            #---Envelope Lowpass (anti-aliasing before decimation)
+            if self._envelope_lp_flag and self._decimation_flag:
+                if self._envelope_lp_mode == 'auto':
+                    # Auto: cutoff = 0.4 * fs / decimation_factor (80% of Nyquist)
+                    cutoff = 0.4 * self._bandpass_fs / self._decimation_factor
+                else:
+                    cutoff = self._envelope_lp_manual_cutoff
+                data = butter_lowpass_filter(data, ax=1, cutoff=cutoff,
+                                             fs=self._bandpass_fs, order=self._envelope_lp_order)
+
+        # Decimation
+        if self._decimation_flag:
+            data = data[:, ::self._decimation_factor, :]
+
         #---Logcompression
         if self._logcompression_flag:
             data = logcompression(data, self._logcompression_dbrange)
@@ -628,10 +655,6 @@ class DataProcessor():
             # Normalize Data
             if self._normalization_technique == 'peakZ':
                 data  = Z_normalization(peak_normalization(data))
-
-        # Decimation
-        if self._decimation_flag:
-            data = data[:, ::self._decimation_factor, :]
 
         return data
 
