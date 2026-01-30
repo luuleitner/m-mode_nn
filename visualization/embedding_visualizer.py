@@ -51,7 +51,7 @@ def reduce_dimensions(X, method='tsne', n_components=2, random_state=42):
             n_components=n_components,
             random_state=random_state,
             perplexity=min(30, len(X) - 1),
-            n_iter=1000
+            max_iter=1000  # renamed from n_iter in newer sklearn
         )
     elif method == 'umap':
         try:
@@ -260,7 +260,7 @@ def create_full_visualization(embeddings_dict, method='tsne', output_dir=None):
 
     print("\nInter-class centroid distances:")
     for key, val in stats.items():
-        if key.startswith('dist_'):
+        if isinstance(key, str) and key.startswith('dist_'):
             cls_i, cls_j = key.replace('dist_', '').split('_')
             print(f"  {CLASS_NAMES[int(cls_i)]} <-> {CLASS_NAMES[int(cls_j)]}: {val:.4f}")
 

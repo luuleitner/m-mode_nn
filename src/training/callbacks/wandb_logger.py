@@ -20,13 +20,14 @@ class WandBCallback(Callback):
     """Weights & Biases logging callback."""
 
     def __init__(self, project, config=None, name=None, save_dir=None,
-                 log_every_n_batches=1, watch_model=True):
+                 log_every_n_batches=1, watch_model=True, api_key=None):
         self.project = project
         self.config = config or {}
         self.name = name
         self.save_dir = save_dir
         self.log_every_n_batches = log_every_n_batches
         self.watch_model = watch_model
+        self.api_key = api_key
 
         self.enabled = WANDB_AVAILABLE
         self._run = None
@@ -37,6 +38,10 @@ class WandBCallback(Callback):
             return
 
         try:
+            # Login with API key if provided
+            if self.api_key:
+                wandb.login(key=self.api_key)
+
             self._run = wandb.init(
                 project=self.project,
                 config=self.config,
@@ -88,13 +93,21 @@ class WandBCallback(Callback):
         logs = logs or {}
         try:
             # Log epoch-level metrics with 'epoch' as the x-axis
-            wandb.log({
+            log_dict = {
                 'epoch': epoch,
                 'train/loss': logs.get('train_loss'),
                 'val/loss': logs.get('val_loss'),
                 'val/mse': logs.get('val_mse'),
                 'train/learning_rate': logs.get('learning_rate')
-            })
+            }
+
+            # Add classification metrics if available
+            if 'train_accuracy' in logs:
+                log_dict['train/accuracy'] = logs.get('train_accuracy')
+            if 'val_accuracy' in logs:
+                log_dict['val/accuracy'] = logs.get('val_accuracy')
+
+            wandb.log(log_dict)
         except Exception as e:
             logger.warning(f"Failed to log to WandB: {e}")
 
@@ -105,13 +118,22 @@ class WandBCallback(Callback):
         logs = logs or {}
         try:
             # Log batch-level metrics with 'batch_step' as the x-axis
-            # Keys from base_trainer.compute_loss: total_loss, mse_loss, l1_loss, embedding_reg
-            wandb.log({
+            # Keys from base_trainer.compute_loss: total_loss, mse_loss, l1_loss, embedding_reg, cls_accuracy
+            log_dict = {
                 'batch_step': self._batch_step,
                 'batch/loss': logs.get('total_loss'),
                 'batch/mse_loss': logs.get('mse_loss'),
                 'batch/l1_loss': logs.get('l1_loss'),
-            })
+                'batch/embedding_reg': logs.get('embedding_reg'),
+            }
+
+            # Add classification metrics if available
+            if 'cls_loss' in logs:
+                log_dict['batch/cls_loss'] = logs.get('cls_loss')
+            if 'cls_accuracy' in logs:
+                log_dict['batch/cls_accuracy'] = logs.get('cls_accuracy')
+
+            wandb.log(log_dict)
             self._batch_step += 1
         except Exception as e:
             logger.warning(f"Failed to log batch to WandB: {e}")
