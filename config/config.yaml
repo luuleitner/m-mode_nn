@@ -64,16 +64,16 @@ preprocess:
         # For D=10: 2 MHz, D=5: 4 MHz, D=2: 10 MHz
         manual_cutoff: 2e6              # Used only when mode="manual"
         order: 4
+    decimation:
+      apply: true
+      factor: 2                      # 50MSPS -> 5MSPS
     logcompression:
       apply: true
       db: 45
     normalization:
       apply: true
       method: "peakZ"
-      minmax_path: "/home/cleitner/code/lab/projects/ML/m-mode_nn/config/minmax_Envdata.csv"
-    decimation:
-      apply: true
-      factor: 2                      # 50MSPS -> 5MSPS
+
 
   tokenization:
     tokens2file: true
