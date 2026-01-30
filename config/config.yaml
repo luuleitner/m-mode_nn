@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/run_20260130_135933"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/run_20260130_181108"
 
 
 # ========================================
@@ -64,7 +64,7 @@ preprocess:
       method: "peakZ"
       minmax_path: "/home/cleitner/code/lab/projects/ML/m-mode_nn/config/minmax_Envdata.csv"
     decimation:
-      apply: false
+      apply: true
       factor: 10                      # 50MSPS -> 5MSPS
 
   tokenization:
@@ -176,13 +176,13 @@ ml:
     # =========================================
     # Two options: dataset-level (oversampling) OR loss-level (weighted loss)
     # For joint AE+classification: use weighted loss to preserve real 90/5/5 distribution
-    balance_classes: true                  # Disabled: using weighted loss instead
+    balance_classes: false                  # Disabled: using weighted loss instead
     balance_strategy: "oversample"          # (unused when balance_classes=false)
 
     oversample_config:
       method: "mixed"                     # duplicate | augment | mixed
       target_ratio: 0.4                     # 1.0 = match majority class count
-      augment_ratio: 0.4                    # For 'mixed': ratio of augmented vs duplicated
+      augment_ratio: 0.3                    # For 'mixed': ratio of augmented vs duplicated
 
       # Augmentation settings (semantically preserving transforms)
       augmentations:

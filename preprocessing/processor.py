@@ -14,14 +14,12 @@ from include.dasIT.dasIT.features.signal import envelope, logcompression, analyt
 
 from preprocessing.dimension_checker import DimensionChecker
 from config.configurator import load_config, setup_environment
-from visualization.plot_callback import plot_mmode
+from preprocessing.visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
 from preprocessing.signal_utils import peak_normalization, Z_normalization, butter_bandpass_filter, Time_Gain_Compensation, extract_sliding_windows, apply_joystick_filters
-from preprocessing.label_logic.labeling import (
-    create_derivative_labels,
-    create_edge_to_peak_labels,
-    create_edge_to_derivative_labels,
-    create_5class_labels_dual_axis
+from preprocessing.label_logic.label_logic import (
+    create_position_peak_labels,
+    create_5class_position_peak_labels
 )
 from preprocessing.soft_labels import SoftLabelGenerator, window_hard_labels
 
@@ -107,10 +105,16 @@ class DataProcessor():
 
         # Label configuration - load from separate label_config.yaml
         self._label_config = self._load_label_config()
-        self._label_method = self._label_config.get('method', 'derivative')
-        self._label_threshold = self._label_config.get('threshold_percent', 5.0)
-        self._label_axis = self._label_config.get('axis', 'x')  # x | y | dual
+        self._label_method = self._label_config.get('method', 'position_peak')
+        self._label_axis = self._label_config.get('axis', 'dual')  # x | y | dual
         self._joystick_filters = self._label_config.get('filters', {})
+
+        # Position peak parameters
+        position_peak_config = self._label_config.get('position_peak', {})
+        self._pp_deriv_thresh = position_peak_config.get('deriv_threshold_percent', 10.0)
+        self._pp_pos_thresh = position_peak_config.get('pos_threshold_percent', 5.0)
+        self._pp_peak_window = position_peak_config.get('peak_window', 3)
+        self._pp_timeout = position_peak_config.get('timeout_samples', 500)
 
         # Class configuration (centralized)
         classes_config = self._label_config.get('classes', {})
@@ -328,8 +332,13 @@ class DataProcessor():
                 'save_strategy': self._save_strategy,
                 'output_mode': self._output_mode,
                 'label_method': self._label_method,
-                'label_threshold': self._label_threshold,
                 'label_axis': self._label_axis,
+                'position_peak': {
+                    'deriv_threshold_percent': self._pp_deriv_thresh,
+                    'pos_threshold_percent': self._pp_pos_thresh,
+                    'peak_window': self._pp_peak_window,
+                    'timeout_samples': self._pp_timeout
+                },
                 'soft_labels_enabled': self._soft_labels_enabled,
                 'num_label_classes': self._num_label_classes
             },
@@ -705,9 +714,11 @@ class DataProcessor():
                 y_derivative, self._joystick_filters, 'derivative'
             )
 
-            # Create 5-class labels using edge_to_derivative + amplitude voting
-            hard_labels, _, _ = create_5class_labels_dual_axis(
-                x_filtered, y_filtered, x_derivative, y_derivative, self._label_threshold
+            # Create 5-class labels using position_peak + amplitude voting
+            hard_labels, _, _ = create_5class_position_peak_labels(
+                x_filtered, y_filtered, x_derivative, y_derivative,
+                self._pp_deriv_thresh, self._pp_pos_thresh,
+                self._pp_peak_window, self._pp_timeout
             )
         else:
             # Single-axis mode: 3-class labels (original behavior)
@@ -731,15 +742,12 @@ class DataProcessor():
                 derivative, self._joystick_filters, 'derivative'
             )
 
-            # Create per-sample hard labels based on configured method
-            if self._label_method == 'derivative':
-                hard_labels, _ = create_derivative_labels(derivative, self._label_threshold)
-            elif self._label_method == 'edge_to_peak':
-                hard_labels, _, _ = create_edge_to_peak_labels(position_data, derivative, self._label_threshold)
-            elif self._label_method == 'edge_to_derivative':
-                hard_labels, _, _, _ = create_edge_to_derivative_labels(position_data, derivative, self._label_threshold)
-            else:
-                raise ValueError(f"Unknown label method: {self._label_method}")
+            # Create per-sample hard labels using position_peak method
+            hard_labels, _, _ = create_position_peak_labels(
+                position_data, derivative,
+                self._pp_deriv_thresh, self._pp_pos_thresh,
+                self._pp_peak_window, self._pp_timeout
+            )
 
         # Validate label range
         label_min, label_max = hard_labels.min(), hard_labels.max()
@@ -932,7 +940,8 @@ class DataProcessor():
             'decimation_factor': self._decimation_factor if self._decimation_flag else None,
             'label_method': self._label_method,
             'label_axis': self._label_axis,
-            'label_threshold': self._label_threshold,
+            'pp_deriv_thresh': self._pp_deriv_thresh,
+            'pp_pos_thresh': self._pp_pos_thresh,
         }
 
         return {
@@ -969,45 +978,39 @@ class DataProcessor():
         y_derivative = apply_joystick_filters(np.gradient(y_filtered), self._joystick_filters, 'derivative')
 
         if self._label_axis == 'dual':
-            # 5-class dual-axis mode
-            labels, thresholds, dual_markers = create_5class_labels_dual_axis(
-                x_filtered, y_filtered, x_derivative, y_derivative, self._label_threshold
+            # 5-class dual-axis mode using position_peak
+            labels, thresholds, dual_markers = create_5class_position_peak_labels(
+                x_filtered, y_filtered, x_derivative, y_derivative,
+                self._pp_deriv_thresh, self._pp_pos_thresh,
+                self._pp_peak_window, self._pp_timeout
             )
             markers = {
-                'method': 'dual_axis_5class',
+                'method': 'position_peak_5class',
                 'x_markers': dual_markers.get('x', {}),
                 'y_markers': dual_markers.get('y', {}),
                 'thresholds': thresholds
             }
         else:
-            # Single-axis mode
+            # Single-axis mode using position_peak
             if self._label_axis == 'x':
                 position_data, derivative = x_filtered, x_derivative
             else:
                 position_data, derivative = y_filtered, y_derivative
 
-            # Create labels based on method - preserve markers for visualization
-            if self._label_method == 'derivative':
-                labels, threshold = create_derivative_labels(derivative, self._label_threshold)
-                markers = {
-                    'threshold': threshold,
-                    'method': 'derivative'
-                }
-            elif self._label_method == 'edge_to_peak':
-                labels, threshold, markers = create_edge_to_peak_labels(
-                    position_data, derivative, self._label_threshold
-                )
-                markers['threshold'] = threshold
-                markers['method'] = 'edge_to_peak'
-            elif self._label_method == 'edge_to_derivative':
-                labels, pos_threshold, deriv_threshold, markers = create_edge_to_derivative_labels(
-                    position_data, derivative, self._label_threshold
-                )
-                markers['pos_threshold'] = pos_threshold
-                markers['deriv_threshold'] = deriv_threshold
-                markers['method'] = 'edge_to_derivative'
-            else:
-                raise ValueError(f"Unknown label method: {self._label_method}")
+            labels, thresholds, axis_markers = create_position_peak_labels(
+                position_data, derivative,
+                self._pp_deriv_thresh, self._pp_pos_thresh,
+                self._pp_peak_window, self._pp_timeout
+            )
+            markers = {
+                'method': 'position_peak',
+                'start': axis_markers.get('start', []),
+                'peak': axis_markers.get('peak', []),
+                'stop': axis_markers.get('stop', []),
+                'rejected': axis_markers.get('rejected', []),
+                'timeout': axis_markers.get('timeout', []),
+                'thresholds': thresholds
+            }
 
         # Add position and derivative to markers for plotting
         markers['x_filtered'] = x_filtered

@@ -2,20 +2,21 @@
 Direct CNN Classifier (USMModeCNN-style Architecture)
 
 3-block CNN classifier with global average pooling for position-invariant features.
-Inspired by colleague's USMModeCNN architecture, adapted for 130-depth decimated input.
+Based on colleague's USMModeCNN architecture, adapted for 130-depth decimated input.
 
 Key design principles:
+- Input format: (B, C, Depth, Pulses) - same as USMModeCNN
 - Same-padding preserves edge information
 - Progressive depth reduction with temporal preservation
-- Global average pooling for position invariance (~25K params vs ~2.5M)
+- Global average pooling for position invariance
 - Compact FC head (64 features)
 
-Architecture for (B, 3, 10, 130) input:
-    Input           (B, 3, 10, 130)
-    Block1          (B, 16, 10, 65)    # depth halved
-    Block2          (B, 32, 10, 32)    # depth halved
-    Block3          (B, 64, 5, 16)     # both halved
-    GlobalPool      (B, 64, 1, 1)      # spatial removed
+Architecture for (B, 3, 130, 10) input:
+    Input           (B, 3, 130, 10)     # (B, C, Depth, Pulses)
+    Block1          (B, 16, 65, 10)     # depth halved
+    Block2          (B, 32, 32, 10)     # depth halved
+    Block3          (B, 64, 16, 5)      # both halved
+    GlobalPool      (B, 64, 1, 1)       # spatial removed
     FC              (B, num_classes)
 """
 
@@ -27,70 +28,70 @@ class DirectCNNClassifier(nn.Module):
     """
     USMModeCNN-style classifier with 3 conv blocks and global average pooling.
 
-    Adapted from colleague's architecture for smaller input depth (130 vs 1000).
-    Uses same-padding to preserve edge information and global pooling for
-    position-invariant features.
+    Input format: (B, C, Depth, Pulses) - matches USMModeCNN convention.
+
+    Kernel design follows USMModeCNN philosophy:
+    - Larger kernels along depth (spatial patterns)
+    - Smaller kernels along pulses (temporal preservation)
 
     Args:
         in_channels: Number of input channels (default: 3)
-        input_pulses: Temporal dimension / number of pulses (default: 10)
         input_depth: Spatial dimension / depth samples (default: 130)
-        num_classes: Number of output classes (default: 3)
+        input_pulses: Temporal dimension / number of pulses (default: 10)
+        num_classes: Number of output classes (default: 5)
         dropout: Dropout probability for FC head (default: 0.5)
         spatial_dropout: Dropout2d probability between conv blocks (default: 0.1)
-        use_batchnorm: Kept for API compatibility, always uses batchnorm
     """
 
     def __init__(
         self,
         in_channels=3,
-        input_pulses=10,
         input_depth=130,
-        num_classes=3,
+        input_pulses=10,
+        num_classes=5,
         dropout=0.5,
         spatial_dropout=0.1,
-        use_batchnorm=True  # kept for API compatibility, always uses batchnorm
     ):
         super().__init__()
 
         self.in_channels = in_channels
-        self.input_pulses = input_pulses
         self.input_depth = input_depth
+        self.input_pulses = input_pulses
         self.num_classes = num_classes
         self.spatial_dropout_p = spatial_dropout
         self.fc_dropout_p = dropout
 
-        # Spatial dropout (applied between conv blocks to regularize feature maps)
+        # Spatial dropout (applied between conv blocks)
         self.spatial_drop = nn.Dropout2d(spatial_dropout) if spatial_dropout > 0 else nn.Identity()
 
-        # Block 1: Preserve temporal, downsample depth
-        # Kernel (3,13) with padding (1,6) → same output size
-        # Pool (1,2) → depth: 130→65
+        # Block 1: Downsample depth, preserve pulses
+        # Kernel (13, 3): 13 across depth (spatial), 3 across pulses (temporal)
+        # Pool (2, 1): depth halved, pulses preserved
         self.block1 = nn.Sequential(
-            nn.Conv2d(in_channels, 16, kernel_size=(3, 13), padding=(1, 6)),
+            nn.Conv2d(in_channels, 16, kernel_size=(13, 3), padding=(6, 1)),
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=(1, 2))
+            nn.MaxPool2d(kernel_size=(2, 1))  # depth: 130->65, pulses: 10->10
         )
 
         # Block 2: Continue depth downsampling
-        # Kernel (3,7) with padding (1,3) → same output size
-        # Pool (1,2) → depth: 65→32
+        # Kernel (7, 3): 7 across depth, 3 across pulses
+        # Pool (2, 1): depth halved, pulses preserved
         self.block2 = nn.Sequential(
-            nn.Conv2d(16, 32, kernel_size=(3, 7), padding=(1, 3)),
+            nn.Conv2d(16, 32, kernel_size=(7, 3), padding=(3, 1)),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=(1, 2))
+            nn.MaxPool2d(kernel_size=(2, 1))  # depth: 65->32, pulses: 10->10
         )
 
         # Block 3: Final refinement + temporal reduction
-        # Kernel (3,5) with padding (1,2) → same output size
-        # Pool (2,2) → depth: 32→16, pulses: 10→5
+        # Kernel (5, 3): 5 across depth, 3 across pulses
+        # Pool (2, 2): both halved
         self.block3 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=(3, 5), padding=(1, 2)),
+            nn.Conv2d(32, 64, kernel_size=(5, 3), padding=(2, 1)),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=(2, 2))
+            nn.MaxPool2d(kernel_size=(2, 2))  # depth: 32->16, pulses: 10->5
         )
 
         # Global average pooling (key for position invariance)
@@ -110,16 +111,16 @@ class DirectCNNClassifier(nn.Module):
 
         # Store dimensions for logging
         self._dims = {
-            'input': (in_channels, input_pulses, input_depth),
-            'after_block1': (16, input_pulses, input_depth // 2),
-            'after_block2': (32, input_pulses, input_depth // 4),
-            'after_block3': (64, input_pulses // 2, input_depth // 8),
+            'input': (in_channels, input_depth, input_pulses),
+            'after_block1': (16, input_depth // 2, input_pulses),
+            'after_block2': (32, input_depth // 4, input_pulses),
+            'after_block3': (64, input_depth // 8, input_pulses // 2),
             'after_global_pool': (64, 1, 1),
             'flatten': 64,
             'kernels': {
-                'block1': (3, 13),
-                'block2': (3, 7),
-                'block3': (3, 5)
+                'block1': (13, 3),
+                'block2': (7, 3),
+                'block3': (5, 3)
             }
         }
 
@@ -142,20 +143,19 @@ class DirectCNNClassifier(nn.Module):
     def forward_backbone(self, x):
         """
         Forward pass through backbone (conv layers + global pool).
-        Returns pooled features before classification head.
 
         Args:
-            x: Input tensor (B, C, Pulses, Depth)
+            x: Input tensor (B, C, Depth, Pulses)
 
         Returns:
             Feature tensor (B, 64)
         """
         x = self.block1(x)
-        x = self.spatial_drop(x)  # Spatial dropout after block 1
+        x = self.spatial_drop(x)
         x = self.block2(x)
-        x = self.spatial_drop(x)  # Spatial dropout after block 2
+        x = self.spatial_drop(x)
         x = self.block3(x)
-        x = self.spatial_drop(x)  # Spatial dropout after block 3
+        x = self.spatial_drop(x)
         x = self.global_pool(x)
         x = x.view(x.size(0), -1)
         return x
@@ -165,7 +165,7 @@ class DirectCNNClassifier(nn.Module):
         Full forward pass.
 
         Args:
-            x: Input tensor (B, C, Pulses, Depth)
+            x: Input tensor (B, C, Depth, Pulses)
 
         Returns:
             logits: Classification logits (B, num_classes)
@@ -177,7 +177,6 @@ class DirectCNNClassifier(nn.Module):
     def forward_with_features(self, x):
         """
         Forward pass returning both logits and features.
-        Useful for embedding extraction after training.
 
         Returns:
             tuple: (logits, features)
@@ -195,10 +194,11 @@ class DirectCNNClassifier(nn.Module):
         print("\n" + "=" * 70)
         print("DirectCNNClassifier Architecture (USMModeCNN-style)")
         print("=" * 70)
-        print(f"\nInput dimensions: {self._dims['input']}")
-        print(f"Kernel sizes: Block1={self._dims['kernels']['block1']}, "
-              f"Block2={self._dims['kernels']['block2']}, "
-              f"Block3={self._dims['kernels']['block3']}")
+        print(f"\nInput format: (B, C, Depth, Pulses) = (B, {self.in_channels}, {self.input_depth}, {self.input_pulses})")
+        print(f"\nKernel sizes (Depth, Pulses):")
+        print(f"  Block1: {self._dims['kernels']['block1']} - large depth, small temporal")
+        print(f"  Block2: {self._dims['kernels']['block2']}")
+        print(f"  Block3: {self._dims['kernels']['block3']}")
         print(f"\nRegularization:")
         print(f"  Spatial dropout (between blocks): {self.spatial_dropout_p}")
         print(f"  FC dropout (classifier head):     {self.fc_dropout_p}")
@@ -215,23 +215,23 @@ class DirectCNNClassifier(nn.Module):
 
 
 if __name__ == "__main__":
-    # Test with default dimensions
+    # Test with dimensions matching h5 data: (B, C, Depth, Pulses)
     print("Testing DirectCNNClassifier (USMModeCNN-style)...")
 
     model = DirectCNNClassifier(
         in_channels=3,
-        input_pulses=10,
         input_depth=130,
-        num_classes=3
+        input_pulses=10,
+        num_classes=5
     )
     model.print_architecture()
 
-    # Test forward pass
-    x = torch.randn(4, 3, 10, 130)
+    # Test forward pass with h5 data format
+    x = torch.randn(4, 3, 130, 10)  # (B, C, Depth, Pulses)
     logits = model(x)
     print(f"Input shape: {x.shape}")
     print(f"Output shape: {logits.shape}")
-    assert logits.shape == (4, 3), f"Expected (4, 3), got {logits.shape}"
+    assert logits.shape == (4, 5), f"Expected (4, 5), got {logits.shape}"
 
     logits, features = model.forward_with_features(x)
     print(f"Features shape: {features.shape}")

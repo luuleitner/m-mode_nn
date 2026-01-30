@@ -38,14 +38,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # Add project root to path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
 from config.configurator import load_config
-from preprocessing.label_logic.labeling import (
-    create_derivative_labels,
-    create_edge_to_peak_labels,
-    create_edge_to_derivative_labels
+from preprocessing.label_logic.label_logic import (
+    create_position_peak_labels,
+    create_5class_position_peak_labels
 )
 from preprocessing.signal_utils import apply_joystick_filters
 
@@ -81,15 +80,23 @@ class PickleTokenVisualizer:
         if os.path.exists(label_config_path):
             with open(label_config_path, 'r') as f:
                 label_config = yaml.safe_load(f)
-            self.label_method = label_config.get('method', 'derivative')
-            self.label_threshold = label_config.get('threshold_percent', 5.0)
-            self.label_axis = label_config.get('axis', 'x')
+            self.label_method = label_config.get('method', 'position_peak')
+            self.label_axis = label_config.get('axis', 'dual')
             self.filters_config = label_config.get('filters', {})
+            # Position peak config
+            pp_config = label_config.get('position_peak', {})
+            self.pp_deriv_thresh = pp_config.get('deriv_threshold_percent', 10.0)
+            self.pp_pos_thresh = pp_config.get('pos_threshold_percent', 5.0)
+            self.pp_peak_window = pp_config.get('peak_window', 3)
+            self.pp_timeout = pp_config.get('timeout_samples', 500)
         else:
-            self.label_method = 'derivative'
-            self.label_threshold = 5.0
-            self.label_axis = 'x'
+            self.label_method = 'position_peak'
+            self.label_axis = 'dual'
             self.filters_config = {}
+            self.pp_deriv_thresh = 10.0
+            self.pp_pos_thresh = 5.0
+            self.pp_peak_window = 3
+            self.pp_timeout = 500
 
         # Load available datasets
         for split in ['train', 'val', 'test']:
@@ -111,15 +118,13 @@ class PickleTokenVisualizer:
             numpy array of joystick data or None if not found
         """
         try:
-            # Find session folder
-            session_folders = glob.glob(
-                os.path.join(self.raw_data_path, f"session{int(session)}_W_*")
+            # New hierarchy: P{participant}/session{session}/exp{experiment}
+            exp_folder = os.path.join(
+                self.raw_data_path,
+                f"P{int(participant):03d}",
+                f"session{int(session):03d}",
+                f"exp{int(experiment):03d}"
             )
-            if not session_folders:
-                return None
-
-            session_folder = session_folders[0]
-            exp_folder = os.path.join(session_folder, str(int(experiment)))
 
             if not os.path.exists(exp_folder):
                 return None
@@ -145,43 +150,58 @@ class PickleTokenVisualizer:
 
     def create_labels_from_joystick(self, joystick_data):
         """
-        Create per-sample labels from joystick data.
+        Create per-sample 5-class labels from joystick data using both X and Y axes.
 
         Returns:
-            labels, position, derivative, pos_threshold, deriv_threshold, markers
+            dict with:
+                'labels': merged 5-class labels (0=Noise, 1=Up, 2=Down, 3=Left, 4=Right)
+                'x_position', 'x_derivative': filtered X-axis signals
+                'y_position', 'y_derivative': filtered Y-axis signals
+                'thresholds': dict with threshold values for both axes
+                'x_markers', 'y_markers': edge/peak markers for each axis
         """
-        # Select axis
-        if self.label_axis == 'x':
-            raw_position = joystick_data[:, 1]
-        elif self.label_axis == 'y':
-            raw_position = joystick_data[:, 2]
-        else:
-            raw_position = joystick_data[:, 1]
+        # Get raw positions for both axes
+        raw_x_position = joystick_data[:, 1]  # X axis
+        raw_y_position = joystick_data[:, 2]  # Y axis
 
-        # Apply filters
+        # Apply filters to X position
         if self.filters_config:
-            position = apply_joystick_filters(raw_position.copy(), self.filters_config, 'position')
+            x_position = apply_joystick_filters(raw_x_position.copy(), self.filters_config, 'position')
         else:
-            position = raw_position.copy()
+            x_position = raw_x_position.copy()
 
-        derivative = np.gradient(position)
-
+        x_derivative = np.gradient(x_position)
         if self.filters_config:
-            derivative = apply_joystick_filters(derivative, self.filters_config, 'derivative')
+            x_derivative = apply_joystick_filters(x_derivative, self.filters_config, 'derivative')
 
-        if self.label_method == 'derivative':
-            labels, threshold = create_derivative_labels(derivative, self.label_threshold)
-            return labels, position, derivative, threshold, None, None
-        elif self.label_method == 'edge_to_peak':
-            labels, threshold, markers = create_edge_to_peak_labels(position, derivative, self.label_threshold)
-            return labels, position, derivative, threshold, None, markers
-        elif self.label_method == 'edge_to_derivative':
-            labels, pos_thresh, deriv_thresh, markers = create_edge_to_derivative_labels(
-                position, derivative, self.label_threshold
-            )
-            return labels, position, derivative, pos_thresh, deriv_thresh, markers
+        # Apply filters to Y position
+        if self.filters_config:
+            y_position = apply_joystick_filters(raw_y_position.copy(), self.filters_config, 'position')
+        else:
+            y_position = raw_y_position.copy()
 
-        return None, position, derivative, None, None, None
+        y_derivative = np.gradient(y_position)
+        if self.filters_config:
+            y_derivative = apply_joystick_filters(y_derivative, self.filters_config, 'derivative')
+
+        # Create 5-class labels using both axes
+        labels, thresholds, markers = create_5class_position_peak_labels(
+            x_position, y_position,
+            x_derivative, y_derivative,
+            self.pp_deriv_thresh, self.pp_pos_thresh,
+            self.pp_peak_window, self.pp_timeout
+        )
+
+        return {
+            'labels': labels,
+            'x_position': x_position,
+            'x_derivative': x_derivative,
+            'y_position': y_position,
+            'y_derivative': y_derivative,
+            'thresholds': thresholds,
+            'x_markers': markers.get('x', {}),
+            'y_markers': markers.get('y', {})
+        }
 
     def load_random_sample(self, split='train', seed=None, augmented_only=False,
                            original_only=False, target_label=None):
@@ -268,7 +288,7 @@ class PickleTokenVisualizer:
         }
 
     def visualize_sample(self, sample):
-        """Create visualization for a sample with joystick context."""
+        """Create visualization for a sample with 5-class dual-axis joystick context."""
         token_data = sample['token']
         label_data = sample['label']
         metadata = sample['metadata']
@@ -286,26 +306,37 @@ class PickleTokenVisualizer:
 
         has_joystick = joystick_data is not None
 
+        # 5-class label colors
+        label_colors_5class = {
+            0: 'rgba(128, 128, 128, 0.15)',  # Noise - gray
+            1: 'rgba(0, 200, 0, 0.25)',       # Up - green
+            2: 'rgba(220, 50, 50, 0.25)',     # Down - red
+            3: 'rgba(50, 100, 220, 0.25)',    # Left - blue
+            4: 'rgba(255, 165, 0, 0.25)',     # Right - orange
+        }
+
         # Create figure layout
         if has_joystick:
-            # Full layout with joystick context
+            # Full layout with dual-axis joystick context (5 rows)
             fig = make_subplots(
-                rows=4, cols=3,
+                rows=5, cols=3,
                 specs=[
-                    [{"colspan": 3, "secondary_y": True}, None, None],  # Row 1: Full joystick
-                    [{"secondary_y": False}, {"secondary_y": True}, {"secondary_y": False}],  # Row 2
-                    [{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}],  # Row 3
+                    [{"colspan": 3, "secondary_y": True}, None, None],  # Row 1: X-axis
+                    [{"colspan": 3, "secondary_y": True}, None, None],  # Row 2: Y-axis
+                    [{"secondary_y": False}, {"secondary_y": True}, {"secondary_y": False}],  # Row 3
                     [{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}],  # Row 4
+                    [{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}],  # Row 5
                 ],
                 subplot_titles=[
-                    f"Full Joystick Signal (Sequence {seq_id})",
-                    "Sample Info", f"Zoomed Window", "Label Distribution",
+                    f"X-Axis (Left/Right) - Sequence {seq_id}",
+                    "Y-Axis (Up/Down)",
+                    "Sample Info", "Zoomed Window", "Label Distribution",
                     "Batch Info", "Augmentation Status", "",
                     "US Channel 1", "US Channel 2", "US Channel 3"
                 ],
-                vertical_spacing=0.06,
+                vertical_spacing=0.05,
                 horizontal_spacing=0.06,
-                row_heights=[0.28, 0.18, 0.14, 0.40]
+                row_heights=[0.18, 0.18, 0.16, 0.12, 0.36]
             )
         else:
             # Fallback layout without joystick
@@ -326,165 +357,151 @@ class PickleTokenVisualizer:
             num_pulses = joystick_data.shape[0]
             start_pulse, end_pulse = self.compute_token_window_indices(seq_id, num_pulses)
 
-            # Create labels from joystick
-            labels_joy, position, derivative, pos_threshold, deriv_threshold, markers = \
-                self.create_labels_from_joystick(joystick_data)
+            # Create 5-class labels from joystick (both axes)
+            label_result = self.create_labels_from_joystick(joystick_data)
+            labels_joy = label_result['labels']
+            x_position = label_result['x_position']
+            x_derivative = label_result['x_derivative']
+            y_position = label_result['y_position']
+            y_derivative = label_result['y_derivative']
+            thresholds = label_result['thresholds']
+            x_markers = label_result['x_markers']
+            y_markers = label_result['y_markers']
 
-            x_full = np.arange(len(position))
+            x_full = np.arange(len(labels_joy))
 
-            # === ROW 1: Full joystick signal ===
-            label_colors = {1: 'rgba(144, 238, 144, 0.2)', 2: 'rgba(240, 128, 128, 0.2)'}
-
-            # Add label regions
-            if labels_joy is not None:
-                for label_val in [1, 2]:
+            # Helper to add label regions to a row
+            def add_label_regions(row):
+                for label_val in [1, 2, 3, 4]:  # Skip noise for cleaner display
                     mask = labels_joy == label_val
                     diff = np.diff(np.concatenate([[0], mask.astype(int), [0]]))
                     starts = np.where(diff == 1)[0]
                     ends = np.where(diff == -1)[0]
                     for s, e in zip(starts, ends):
-                        fig.add_vrect(x0=s, x1=e, fillcolor=label_colors[label_val],
-                                     layer="below", line_width=0, row=1, col=1)
+                        fig.add_vrect(x0=s, x1=e, fillcolor=label_colors_5class[label_val],
+                                     layer="below", line_width=0, row=row, col=1)
 
-            # Position trace
-            fig.add_trace(
-                go.Scatter(x=x_full, y=position, mode='lines',
-                          line=dict(color='blue', width=1),
-                          name=f'Position ({self.label_axis.upper()})'),
-                row=1, col=1, secondary_y=False
-            )
-
-            # Derivative trace
-            fig.add_trace(
-                go.Scatter(x=x_full, y=derivative, mode='lines',
-                          line=dict(color='red', width=1), opacity=0.7,
-                          name='Derivative'),
-                row=1, col=1, secondary_y=True
-            )
-
-            # Threshold lines
-            if pos_threshold is not None:
-                fig.add_hline(y=pos_threshold, line=dict(color='blue', dash='dash', width=1),
-                             opacity=0.5, row=1, col=1, secondary_y=False)
-                fig.add_hline(y=-pos_threshold, line=dict(color='blue', dash='dash', width=1),
-                             opacity=0.5, row=1, col=1, secondary_y=False)
-
-            if deriv_threshold is not None:
-                fig.add_hline(y=deriv_threshold, line=dict(color='orange', dash='dash', width=1),
-                             opacity=0.5, row=1, col=1, secondary_y=True)
-                fig.add_hline(y=-deriv_threshold, line=dict(color='orange', dash='dash', width=1),
-                             opacity=0.5, row=1, col=1, secondary_y=True)
-
-            # Highlight token window with prominent cyan box
-            fig.add_vrect(
-                x0=start_pulse, x1=end_pulse,
-                fillcolor='rgba(0, 255, 255, 0.25)',
-                layer="above",
-                line=dict(color='cyan', width=3),
-                row=1, col=1
-            )
-
-            # Add vertical lines at window boundaries for extra visibility
-            fig.add_vline(x=start_pulse, line=dict(color='magenta', width=2, dash='solid'),
-                         row=1, col=1)
-            fig.add_vline(x=end_pulse, line=dict(color='magenta', width=2, dash='solid'),
-                         row=1, col=1)
-
-            # Add annotation pointing to the window
-            mid_pulse = (start_pulse + end_pulse) / 2
-            fig.add_annotation(
-                x=mid_pulse, y=1.05,
-                text=f"<b>Token Window</b><br>(pulses {start_pulse}-{end_pulse})",
-                showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, arrowcolor='magenta',
-                ax=0, ay=-40,
-                font=dict(size=10, color='magenta'),
-                bgcolor='rgba(255,255,255,0.8)',
-                bordercolor='magenta', borderwidth=1,
-                xref="x", yref="y domain",
-                row=1, col=1
-            )
-
-            # Add scatter markers for edge/peak/derivative crossings
-            if markers is not None:
-                # Edge up markers on POSITION trace (green triangles)
+            # Helper to add markers for an axis
+            def add_axis_markers(row, position, derivative, markers, axis_name):
+                if markers is None:
+                    return
+                # Edge up markers
                 if len(markers.get('edge_up', [])) > 0:
-                    edge_up_idx = markers['edge_up']
+                    edge_up_idx = np.array(markers['edge_up'])
                     fig.add_trace(
                         go.Scatter(x=edge_up_idx, y=position[edge_up_idx],
                                   mode='markers',
-                                  marker=dict(symbol='triangle-up', size=12, color='green',
+                                  marker=dict(symbol='triangle-up', size=10, color='green',
                                              line=dict(color='white', width=1)),
-                                  opacity=0.8, name='Edge Up', legendgroup='edge_up',
-                                  showlegend=True),
-                        row=1, col=1, secondary_y=False
+                                  opacity=0.8, name=f'{axis_name} Edge+', legendgroup=f'{axis_name}_edge_up',
+                                  showlegend=(row == 1)),
+                        row=row, col=1, secondary_y=False
                     )
-
-                # Edge down markers on POSITION trace (red triangles)
+                # Edge down markers
                 if len(markers.get('edge_down', [])) > 0:
-                    edge_down_idx = markers['edge_down']
+                    edge_down_idx = np.array(markers['edge_down'])
                     fig.add_trace(
                         go.Scatter(x=edge_down_idx, y=position[edge_down_idx],
                                   mode='markers',
-                                  marker=dict(symbol='triangle-down', size=12, color='red',
+                                  marker=dict(symbol='triangle-down', size=10, color='red',
                                              line=dict(color='white', width=1)),
-                                  opacity=0.8, name='Edge Down', legendgroup='edge_down',
-                                  showlegend=True),
-                        row=1, col=1, secondary_y=False
+                                  opacity=0.8, name=f'{axis_name} Edge-', legendgroup=f'{axis_name}_edge_down',
+                                  showlegend=(row == 1)),
+                        row=row, col=1, secondary_y=False
                     )
+                # Peak markers
+                for key, color, name_suffix in [('peak_up', 'darkgreen', 'Peak+'), ('peak_down', 'darkred', 'Peak-')]:
+                    if key in markers and len(markers[key]) > 0:
+                        idx = np.array(markers[key])
+                        fig.add_trace(
+                            go.Scatter(x=idx, y=derivative[idx],
+                                      mode='markers',
+                                      marker=dict(symbol='circle', size=8, color=color),
+                                      name=f'{axis_name} {name_suffix}', legendgroup=f'{axis_name}_{key}',
+                                      showlegend=(row == 1)),
+                            row=row, col=1, secondary_y=True
+                        )
 
-                # Peak markers for edge_to_peak method (circles on derivative)
-                if 'peak_up' in markers and len(markers['peak_up']) > 0:
-                    peak_up_idx = markers['peak_up']
-                    fig.add_trace(
-                        go.Scatter(x=peak_up_idx, y=derivative[peak_up_idx],
-                                  mode='markers',
-                                  marker=dict(symbol='circle', size=10, color='darkgreen'),
-                                  name='Peak Up', legendgroup='peak_up',
-                                  showlegend=True),
-                        row=1, col=1, secondary_y=True
-                    )
+            # === ROW 1: X-axis (Left/Right) ===
+            add_label_regions(1)
 
-                if 'peak_down' in markers and len(markers['peak_down']) > 0:
-                    peak_down_idx = markers['peak_down']
-                    fig.add_trace(
-                        go.Scatter(x=peak_down_idx, y=derivative[peak_down_idx],
-                                  mode='markers',
-                                  marker=dict(symbol='circle', size=10, color='darkred'),
-                                  name='Peak Down', legendgroup='peak_down',
-                                  showlegend=True),
-                        row=1, col=1, secondary_y=True
-                    )
+            # X Position trace
+            fig.add_trace(
+                go.Scatter(x=x_full, y=x_position, mode='lines',
+                          line=dict(color='blue', width=1.5),
+                          name='X Position'),
+                row=1, col=1, secondary_y=False
+            )
 
-                # Derivative crossing markers for edge_to_derivative method (squares)
-                if 'deriv_cross_up' in markers and len(markers['deriv_cross_up']) > 0:
-                    cross_up_idx = markers['deriv_cross_up']
-                    fig.add_trace(
-                        go.Scatter(x=cross_up_idx, y=derivative[cross_up_idx],
-                                  mode='markers',
-                                  marker=dict(symbol='square', size=10, color='darkgreen',
-                                             line=dict(color='white', width=1)),
-                                  name='Deriv Cross Up', legendgroup='deriv_cross_up',
-                                  showlegend=True),
-                        row=1, col=1, secondary_y=True
-                    )
+            # X Derivative trace
+            fig.add_trace(
+                go.Scatter(x=x_full, y=x_derivative, mode='lines',
+                          line=dict(color='purple', width=1), opacity=0.6,
+                          name='X Derivative'),
+                row=1, col=1, secondary_y=True
+            )
 
-                if 'deriv_cross_down' in markers and len(markers['deriv_cross_down']) > 0:
-                    cross_down_idx = markers['deriv_cross_down']
-                    fig.add_trace(
-                        go.Scatter(x=cross_down_idx, y=derivative[cross_down_idx],
-                                  mode='markers',
-                                  marker=dict(symbol='square', size=10, color='darkred',
-                                             line=dict(color='white', width=1)),
-                                  name='Deriv Cross Down', legendgroup='deriv_cross_down',
-                                  showlegend=True),
-                        row=1, col=1, secondary_y=True
-                    )
+            # X thresholds
+            x_pos_thresh = thresholds.get('x_pos')
+            if x_pos_thresh is not None:
+                fig.add_hline(y=x_pos_thresh, line=dict(color='blue', dash='dash', width=1),
+                             opacity=0.4, row=1, col=1, secondary_y=False)
+                fig.add_hline(y=-x_pos_thresh, line=dict(color='blue', dash='dash', width=1),
+                             opacity=0.4, row=1, col=1, secondary_y=False)
 
-            fig.update_yaxes(title_text="Position", row=1, col=1, secondary_y=False)
-            fig.update_yaxes(title_text="Derivative", row=1, col=1, secondary_y=True)
+            add_axis_markers(1, x_position, x_derivative, x_markers, 'X')
+
+            # Token window highlight on row 1
+            fig.add_vrect(x0=start_pulse, x1=end_pulse, fillcolor='rgba(0, 255, 255, 0.2)',
+                         layer="above", line=dict(color='cyan', width=2), row=1, col=1)
+
+            # === ROW 2: Y-axis (Up/Down) ===
+            add_label_regions(2)
+
+            # Y Position trace
+            fig.add_trace(
+                go.Scatter(x=x_full, y=y_position, mode='lines',
+                          line=dict(color='darkgreen', width=1.5),
+                          name='Y Position'),
+                row=2, col=1, secondary_y=False
+            )
+
+            # Y Derivative trace
+            fig.add_trace(
+                go.Scatter(x=x_full, y=y_derivative, mode='lines',
+                          line=dict(color='orange', width=1), opacity=0.6,
+                          name='Y Derivative'),
+                row=2, col=1, secondary_y=True
+            )
+
+            # Y thresholds
+            y_pos_thresh = thresholds.get('y_pos')
+            if y_pos_thresh is not None:
+                fig.add_hline(y=y_pos_thresh, line=dict(color='darkgreen', dash='dash', width=1),
+                             opacity=0.4, row=2, col=1, secondary_y=False)
+                fig.add_hline(y=-y_pos_thresh, line=dict(color='darkgreen', dash='dash', width=1),
+                             opacity=0.4, row=2, col=1, secondary_y=False)
+
+            add_axis_markers(2, y_position, y_derivative, y_markers, 'Y')
+
+            # Token window highlight on row 2
+            fig.add_vrect(x0=start_pulse, x1=end_pulse, fillcolor='rgba(0, 255, 255, 0.2)',
+                         layer="above", line=dict(color='cyan', width=2), row=2, col=1)
+            fig.add_vline(x=start_pulse, line=dict(color='magenta', width=2), row=2, col=1)
+            fig.add_vline(x=end_pulse, line=dict(color='magenta', width=2), row=2, col=1)
+
+            # Fix x-axis range (autorange=False forces explicit range)
+            num_samples = len(labels_joy)
+            fig.update_xaxes(range=[0, num_samples], autorange=False, row=1, col=1)
+            fig.update_xaxes(range=[0, num_samples], autorange=False, row=2, col=1)
             fig.update_xaxes(title_text="Pulse Index", row=1, col=1)
+            fig.update_xaxes(title_text="Pulse Index", row=2, col=1)
+            fig.update_yaxes(title_text="X Position", row=1, col=1, secondary_y=False)
+            fig.update_yaxes(title_text="X Derivative", row=1, col=1, secondary_y=True)
+            fig.update_yaxes(title_text="Y Position", row=2, col=1, secondary_y=False)
+            fig.update_yaxes(title_text="Y Derivative", row=2, col=1, secondary_y=True)
 
-            # === ROW 2, COL 1: Sample Info ===
+            # === ROW 3, COL 1: Sample Info ===
             aug_status = "AUGMENTED" if sample['is_augmented'] else "ORIGINAL"
             aug_color = "orange" if sample['is_augmented'] else "green"
 
@@ -495,61 +512,63 @@ class PickleTokenVisualizer:
                 f"Session: {session}<br>"
                 f"Participant: {participant}<br>"
                 f"Experiment: {experiment}<br>"
-                f"Sequence ID: {seq_id}"
+                f"Sequence ID: {seq_id}<br>"
+                f"<b>5-Class Dual-Axis</b>"
             )
             fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='markers',
                                      marker=dict(opacity=0), showlegend=False, hoverinfo='skip'),
-                          row=2, col=1)
+                          row=3, col=1)
             fig.add_annotation(
                 x=0.5, y=0.5, text=info_text,
-                showarrow=False, font=dict(size=11),
-                xref="x2 domain", yref="y2 domain",
+                showarrow=False, font=dict(size=10),
+                xref="x3 domain", yref="y3 domain",
                 align="left", bgcolor="rgba(255,255,255,0.9)",
                 bordercolor=aug_color, borderwidth=2
             )
-            fig.update_xaxes(visible=False, row=2, col=1)
-            fig.update_yaxes(visible=False, row=2, col=1)
+            fig.update_xaxes(visible=False, row=3, col=1)
+            fig.update_yaxes(visible=False, row=3, col=1)
 
-            # === ROW 2, COL 2: Zoomed joystick window ===
+            # === ROW 3, COL 2: Zoomed joystick window (both axes) ===
             x_zoom = np.arange(start_pulse, end_pulse)
-            pos_zoom = position[start_pulse:end_pulse]
-            deriv_zoom = derivative[start_pulse:end_pulse]
+            x_pos_zoom = x_position[start_pulse:end_pulse]
+            y_pos_zoom = y_position[start_pulse:end_pulse]
 
-            if labels_joy is not None:
-                labels_zoom = labels_joy[start_pulse:end_pulse]
-                for label_val in [1, 2]:
-                    mask = labels_zoom == label_val
-                    diff = np.diff(np.concatenate([[0], mask.astype(int), [0]]))
-                    starts_z = np.where(diff == 1)[0] + start_pulse
-                    ends_z = np.where(diff == -1)[0] + start_pulse
-                    for s, e in zip(starts_z, ends_z):
-                        fig.add_vrect(x0=s, x1=e, fillcolor=label_colors[label_val],
-                                     layer="below", line_width=0, row=2, col=2)
+            # Add 5-class label regions in zoomed view
+            labels_zoom = labels_joy[start_pulse:end_pulse]
+            for label_val in [1, 2, 3, 4]:
+                mask = labels_zoom == label_val
+                diff = np.diff(np.concatenate([[0], mask.astype(int), [0]]))
+                starts_z = np.where(diff == 1)[0] + start_pulse
+                ends_z = np.where(diff == -1)[0] + start_pulse
+                for s, e in zip(starts_z, ends_z):
+                    fig.add_vrect(x0=s, x1=e, fillcolor=label_colors_5class[label_val],
+                                 layer="below", line_width=0, row=3, col=2)
 
+            # Show both X and Y positions in zoomed view
             fig.add_trace(
-                go.Scatter(x=x_zoom, y=pos_zoom, mode='lines',
+                go.Scatter(x=x_zoom, y=x_pos_zoom, mode='lines',
                           line=dict(color='blue', width=2),
-                          name='Position (zoom)', showlegend=False),
-                row=2, col=2, secondary_y=False
+                          name='X (zoom)', showlegend=False),
+                row=3, col=2, secondary_y=False
             )
             fig.add_trace(
-                go.Scatter(x=x_zoom, y=deriv_zoom, mode='lines',
-                          line=dict(color='red', width=2), opacity=0.7,
-                          name='Derivative (zoom)', showlegend=False),
-                row=2, col=2, secondary_y=True
+                go.Scatter(x=x_zoom, y=y_pos_zoom, mode='lines',
+                          line=dict(color='darkgreen', width=2),
+                          name='Y (zoom)', showlegend=False),
+                row=3, col=2, secondary_y=True
             )
 
-            # === ROW 2, COL 3: Label distribution ===
-            self._add_label_distribution(fig, label_data, row=2, col=3)
+            # === ROW 3, COL 3: Label distribution (5-class) ===
+            self._add_label_distribution(fig, label_data, row=3, col=3)
 
-            # === ROW 3, COL 1: Batch Info ===
-            self._add_batch_info(fig, sample, row=3, col=1, xref="x5 domain", yref="y5 domain")
+            # === ROW 4, COL 1: Batch Info ===
+            self._add_batch_info(fig, sample, row=4, col=1, xref="x7 domain", yref="y7 domain")
 
-            # === ROW 3, COL 2: Augmentation Status ===
-            self._add_augmentation_info(fig, sample, row=3, col=2, xref="x6 domain", yref="y6 domain")
+            # === ROW 4, COL 2: Augmentation Status ===
+            self._add_augmentation_info(fig, sample, row=4, col=2, xref="x8 domain", yref="y8 domain")
 
-            # === ROW 4: US Channels ===
-            us_row = 4
+            # === ROW 5: US Channels ===
+            us_row = 5
 
         else:
             # Fallback: No joystick data
@@ -617,7 +636,7 @@ class PickleTokenVisualizer:
 
         fig.update_layout(
             title=dict(text=title_text, font=dict(size=16)),
-            height=1000 if has_joystick else 700,
+            height=1200 if has_joystick else 700,
             width=1400,
             showlegend=True,
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
@@ -626,21 +645,22 @@ class PickleTokenVisualizer:
         return fig
 
     def _add_label_distribution(self, fig, label_data, row, col):
-        """Add label distribution bar chart."""
+        """Add label distribution bar chart (5-class)."""
         if label_data is not None:
             label_flat = label_data.flatten()
-            class_names = ['Noise', 'Up/Right', 'Down/Left']
-            colors = ['gray', 'green', 'red']
+            # 5-class names and colors
+            class_names = ['Noise', 'Up', 'Down', 'Left', 'Right']
+            colors = ['gray', 'green', 'red', 'blue', 'orange']
 
             if label_flat.size == 1:
                 label_val = int(label_flat[0])
-                probs = [1.0 if i == label_val else 0.0 for i in range(3)]
+                probs = [1.0 if i == label_val else 0.0 for i in range(5)]
             elif label_data.dtype in [np.float32, np.float64] and np.allclose(label_flat.sum(), 1.0, atol=0.1):
                 probs = label_flat.tolist()
-                if len(probs) < 3:
-                    probs.extend([0] * (3 - len(probs)))
+                if len(probs) < 5:
+                    probs.extend([0] * (5 - len(probs)))
             else:
-                counts = [np.sum(label_flat == i) for i in range(3)]
+                counts = [np.sum(label_flat == i) for i in range(5)]
                 total = sum(counts)
                 probs = [c / total if total > 0 else 0 for c in counts]
 
@@ -765,10 +785,18 @@ class PickleTokenVisualizer:
 
         if not valid_sources:
             print("No source samples found with both original and augmented versions.")
-            print("Showing random original and random augmented instead.")
-            sample_orig = self.load_random_sample(split=split, original_only=True, seed=seed)
-            sample_aug = self.load_random_sample(split=split, augmented_only=True, seed=seed)
-            same_source = False
+            # Try to find any augmented samples
+            try:
+                sample_orig = self.load_random_sample(split=split, original_only=True, seed=seed)
+                sample_aug = self.load_random_sample(split=split, augmented_only=True, seed=seed)
+                print("Showing random original and random augmented instead.")
+                same_source = False
+            except ValueError:
+                print("No augmented samples found in dataset. Showing two random original samples.")
+                sample_orig = self.load_random_sample(split=split, original_only=True, seed=seed)
+                # Use different seed for second sample
+                sample_aug = self.load_random_sample(split=split, original_only=True, seed=(seed + 1) if seed else None)
+                same_source = False
         else:
             source_key = valid_sources[np.random.randint(len(valid_sources))]
             orig_loc = samples_by_source[source_key]['original'][0]
@@ -1173,13 +1201,13 @@ class PickleTokenVisualizer:
         fig.show()
 
     def show_by_class(self, split='train', seed=None):
-        """Show 3 separate visualizations, one for each label class."""
+        """Show 5 separate visualizations, one for each label class."""
         import plotly.io as pio
         pio.renderers.default = 'browser'
 
-        label_names = {0: 'Noise', 1: 'Up/Right', 2: 'Down/Left'}
+        label_names = {0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'}
 
-        for target_label in [0, 1, 2]:
+        for target_label in [0, 1, 2, 3, 4]:
             try:
                 sample = self.load_random_sample(split=split, seed=seed, target_label=target_label)
                 fig = self.visualize_sample(sample)
