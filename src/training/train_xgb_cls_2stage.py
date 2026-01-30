@@ -1,14 +1,14 @@
 """
-Two-Stage Classifier Training
+Two-Stage XGBoost Classifier Training
 
-Train a two-stage hierarchical classifier on extracted embeddings:
+Train a two-stage hierarchical XGBoost classifier on extracted embeddings:
   Stage 1: Intention detection (noise vs intention)
   Stage 2: Direction classification (upward vs downward)
 
 Usage:
-    python -m src.training.train_two_stage --config config/config.yaml --embeddings path/to/embeddings.npz
-    python -m src.training.train_two_stage --config config/config.yaml --embeddings path/to/embeddings.npz --tune
-    python -m src.training.train_two_stage --config config/config.yaml --embeddings path/to/embeddings.npz --target-recall 0.95
+    python -m src.training.train_xgb_cls_2stage --config config/config.yaml --embeddings path/to/embeddings.npz
+    python -m src.training.train_xgb_cls_2stage --config config/config.yaml --embeddings path/to/embeddings.npz --tune
+    python -m src.training.train_xgb_cls_2stage --config config/config.yaml --embeddings path/to/embeddings.npz --target-recall 0.95
 """
 
 import os

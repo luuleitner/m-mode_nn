@@ -1,12 +1,12 @@
 """
-Training Entry Point
+UNet Autoencoder Training
 
-Unified training script for autoencoder models.
+Training script for UNetAutoencoder with optional classification head.
 Uses config-driven model and adapter selection.
 
 Usage:
-    python -m src.training.train --config config/config.yaml
-    python -m src.training.train --config config/config.yaml --restart
+    python -m src.training.train_unet_ae --config config/config.yaml
+    python -m src.training.train_unet_ae --config config/config.yaml --restart
 """
 
 import os
@@ -57,19 +57,7 @@ def create_model(config):
     input_pulses = config.preprocess.tokenization.window  # H dimension (temporal)
     input_depth = 130  # W dimension (spatial, after decimation)
 
-    if model_type == "CNNAutoencoder":
-        from src.models.cnn_ae import CNNAutoencoder
-
-        model = CNNAutoencoder(
-            in_channels=3,
-            input_height=input_pulses,  # Pulses (temporal)
-            input_width=input_depth,     # Depth (spatial)
-            channels=config.ml.model.channels_per_layer,
-            embedding_dim=config.ml.model.embedding_dim,
-            use_batchnorm=use_batchnorm,
-            num_classes=num_classes
-        )
-    elif model_type == "UNetAutoencoder":
+    if model_type == "UNetAutoencoder":
         from src.models.unet_ae import UNetAutoencoder
 
         model = UNetAutoencoder(
@@ -94,7 +82,7 @@ def create_adapter(config):
     """Create adapter based on model type."""
     model_type = config.ml.model.type
 
-    if model_type in ["CNNAutoencoder", "UNetAutoencoder"]:
+    if model_type == "UNetAutoencoder":
         return CNNAdapter()
     else:
         raise ValueError(f"No adapter for model type: {model_type}")

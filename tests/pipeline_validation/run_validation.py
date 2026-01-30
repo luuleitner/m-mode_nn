@@ -47,19 +47,9 @@ from tests.pipeline_validation.synthetic_dataset import (
 # STAGE 1: Autoencoder Training
 # ============================================================================
 
-def create_model(model_type: str = "CNNAutoencoder", embedding_dim: int = 128):
+def create_model(model_type: str = "UNetAutoencoder", embedding_dim: int = 128):
     """Create autoencoder model."""
-    if model_type == "CNNAutoencoder":
-        from src.models.cnn_ae import CNNAutoencoder
-        model = CNNAutoencoder(
-            in_channels=3,
-            input_height=130,
-            input_width=18,
-            channels=[32, 64, 128, 256],  # Lighter for faster testing
-            embedding_dim=embedding_dim,
-            use_batchnorm=True
-        )
-    elif model_type == "UNetAutoencoder":
+    if model_type == "UNetAutoencoder":
         from src.models.unet_ae import UNetAutoencoder
         model = UNetAutoencoder(
             in_channels=3,
@@ -70,7 +60,7 @@ def create_model(model_type: str = "CNNAutoencoder", embedding_dim: int = 128):
             use_batchnorm=True
         )
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise ValueError(f"Unknown model type: {model_type}. Only UNetAutoencoder is supported.")
 
     return model
 
@@ -382,7 +372,7 @@ def train_classifier(embeddings: dict, use_sample_weights: bool = True) -> tuple
 # ============================================================================
 
 def run_pipeline_validation(
-    model_type: str = "CNNAutoencoder",
+    model_type: str = "UNetAutoencoder",
     embedding_dim: int = 128,
     epochs: int = 10,
     n_train: int = 600,
@@ -402,7 +392,7 @@ def run_pipeline_validation(
     Run full pipeline validation.
 
     Args:
-        model_type: "CNNAutoencoder" or "UNetAutoencoder"
+        model_type: "UNetAutoencoder"
         embedding_dim: Latent space dimension
         epochs: Training epochs
         n_train: Number of training samples
@@ -558,8 +548,8 @@ def parse_args():
     parser.add_argument(
         '--model', '-m',
         type=str,
-        default='CNNAutoencoder',
-        choices=['CNNAutoencoder', 'UNetAutoencoder'],
+        default='UNetAutoencoder',
+        choices=['UNetAutoencoder'],
         help='Model type to test'
     )
 

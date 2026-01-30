@@ -1,5 +1,4 @@
-from .cnn_ae import CNNAutoencoder
 from .unet_ae import UNetAutoencoder
-from .direct_cnn_classifier import DirectCNNClassifier, DirectCNNClassifierLarge
+from .direct_cnn_classifier import DirectCNNClassifier
 
-__all__ = ['CNNAutoencoder', 'UNetAutoencoder', 'DirectCNNClassifier', 'DirectCNNClassifierLarge']
+__all__ = ['UNetAutoencoder', 'DirectCNNClassifier']
