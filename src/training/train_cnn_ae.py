@@ -141,7 +141,8 @@ def create_callbacks(config, results_dir, test_loader=None):
             project=config.wandb.project,
             config=wandb_config,
             name=config.wandb.name,
-            save_dir=results_dir
+            save_dir=results_dir,
+            api_key=getattr(config.wandb, 'api_key', None)
         ))
 
     # Early stopping callback

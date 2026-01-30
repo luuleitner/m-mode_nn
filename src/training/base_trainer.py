@@ -183,7 +183,17 @@ class BaseTrainer:
         if logits is not None and labels is not None and classification_weight > 0:
             hard_labels = self._to_hard_labels(labels)
 
-            cls_loss = F.cross_entropy(logits, hard_labels)
+            # Apply class weights to classification loss if available
+            if class_weights is not None:
+                num_classes = logits.shape[-1]
+                cls_weight_tensor = torch.tensor(
+                    [class_weights.get(i, 1.0) for i in range(num_classes)],
+                    device=logits.device, dtype=logits.dtype
+                )
+                cls_loss = F.cross_entropy(logits, hard_labels, weight=cls_weight_tensor)
+            else:
+                cls_loss = F.cross_entropy(logits, hard_labels)
+
             total_loss = total_loss + classification_weight * cls_loss
 
             loss_dict['cls_loss'] = cls_loss.item()
@@ -201,7 +211,8 @@ class BaseTrainer:
         """Train for one epoch. Returns average loss."""
         self.model.train()
         total_loss = 0
-        total_accuracy = 0
+        total_correct = 0
+        total_samples = 0
         has_classifier = False
 
         pbar = tqdm(train_loader, desc=f'Epoch {epoch + 1}')
@@ -233,7 +244,10 @@ class BaseTrainer:
 
             total_loss += loss.item()
             if 'cls_accuracy' in loss_dict:
-                total_accuracy += loss_dict['cls_accuracy']
+                # Track correct predictions and samples for proper averaging
+                batch_size = data.size(0)
+                total_correct += loss_dict['cls_accuracy'] * batch_size
+                total_samples += batch_size
 
             # Update progress bar
             postfix = {'loss': f'{loss.item():.4f}'}
@@ -244,8 +258,8 @@ class BaseTrainer:
             self.callbacks.on_batch_end(batch_idx, loss_dict)
 
         avg_loss = total_loss / len(train_loader)
-        if has_classifier:
-            avg_accuracy = total_accuracy / len(train_loader)
+        if has_classifier and total_samples > 0:
+            avg_accuracy = total_correct / total_samples  # Sample-weighted accuracy
             return avg_loss, avg_accuracy
         return avg_loss
 
@@ -396,14 +410,15 @@ class BaseTrainer:
 
             self.callbacks.on_epoch_end(epoch, callback_logs)
 
-            # Log progress
+            # Log progress - use print to ensure visibility (tqdm can hide logger output)
             log_msg = (
                 f"Epoch {epoch + 1}/{epochs}: "
                 f"Train={avg_train_loss:.4f}, Val={avg_val_loss:.4f} (unw={avg_val_loss_unweighted:.4f}), "
                 f"MSE={avg_val_mse:.4f}, LR={current_lr:.2e}"
             )
             if train_accuracy is not None:
-                log_msg += f", Acc={val_accuracy:.2%}"
+                log_msg += f", TrainAcc={train_accuracy:.2%}, ValAcc={val_accuracy:.2%}"
+            print(log_msg)  # Print ensures visibility
             logger.info(log_msg)
 
             # Check for early stopping

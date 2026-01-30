@@ -93,7 +93,7 @@ ml:
   # =====================================================================
   # Data Loading
   loading:
-    load_data_pickle: false
+    load_data_pickle: true
   #
   #  ┌─────────────────────────────────────────────────────────────────┐
   #  │  H5 FILES (from preprocessing)                                 │
