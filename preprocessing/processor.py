@@ -90,21 +90,8 @@ class DataProcessor():
 
         #---Normalization
         # In the standard mode the normalization is done channel wise for each exerpiment
-        # One option that is not fully implemented is the possibility to normalize with precomputed values.
-        # NOTE (20251228): The normalization using dataset wide precomputed values is not yet implemented.
-        #  Currently norm is calculated channel-wise for each experiment even thought the infrastructure is already in place
         self._normalization_flag = self._config.preprocess.signal.normalization.apply
         self._normalization_technique = self._config.preprocess.signal.normalization.method
-        self._normalization_minmax_path = self._config.preprocess.signal.normalization.minmax_path
-        if self._normalization_minmax_path:
-            self._minmax_normalization_values = np.loadtxt(self._normalization_minmax_path, delimiter=',')
-            # Sanity check if signal processing and normalization fit together
-            match_log = re.search(r"Log", self._normalization_minmax_path)
-            match_env = re.search(r"Env", self._normalization_minmax_path)
-            if match_log and not self._logcompression_flag:
-                raise ValueError("Normalization file suggests log compression, but log compression is disabled.")
-            if match_env and not self._envelope_flag:
-                raise ValueError("Normalization file suggests envelope detection, but envelope detection is disabled.")
 
         # Tokens
         self._token_window = self._config.preprocess.tokenization.window
@@ -363,16 +350,7 @@ class DataProcessor():
             }
         }
         
-        # Copy normalization minmax file if it exists
-        if self._normalization_minmax_path and os.path.exists(self._normalization_minmax_path):
-            minmax_filename = os.path.basename(self._normalization_minmax_path)
-            local_minmax_path = os.path.join(self._output_folder, minmax_filename)
-            shutil.copy2(self._normalization_minmax_path, local_minmax_path)
-            
-            replication_info['processing_parameters']['normalization_minmax_file'] = minmax_filename
-            replication_info['processing_parameters']['original_minmax_path'] = self._normalization_minmax_path
-            logger.info(f"Copied normalization file: {minmax_filename}")
-        
+
         replication_path = os.path.join(self._output_folder, 'replication_info.yaml')
         with open(replication_path, 'w') as f:
             yaml.dump(replication_info, f, default_flow_style=False, indent=2)
@@ -624,12 +602,6 @@ class DataProcessor():
 
         #---Envelope
         if self._envelope_flag:
-            # NOTE: @Bruno this introduces quite a significant signal lag i therefore converged back to the original implementation
-            # data = envelope(analytic_signal(data, ax=1,
-            #                                 interp=self._envelope_interp,
-            #                                 padding=self._envelope_padding_flag,
-            #                                 pad_mode=self._envelope_padding_mode,
-            #                                 pad_amount=self._envelope_padding_amount))
             data = envelope(analytic_signal(data))
 
             #---Envelope Lowpass (anti-aliasing before decimation)
@@ -653,6 +625,8 @@ class DataProcessor():
         #---Normalization
         if self._normalization_flag:
             # Normalize Data
+            if self._normalization_technique == 'peak':
+                data  = peak_normalization(data)
             if self._normalization_technique == 'peakZ':
                 data  = Z_normalization(peak_normalization(data))
 

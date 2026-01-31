@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride01_Labels_soft/run_20260130_211313"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/run_20260131_000712"
 
 
 # ========================================
@@ -66,20 +66,19 @@ preprocess:
         order: 4
     decimation:
       apply: true
-      factor: 2                      # 50MSPS -> 5MSPS
+      factor: 10                      # 50MSPS -> 5MSPS
     logcompression:
       apply: true
       db: 45
     normalization:
       apply: true
-      method: "peakZ"
-
+      method: "peak"
 
   tokenization:
     tokens2file: true
     startendID: false
     window: 10
-    stride: 1
+    stride: 5
     description: "Specifies the tokenization process."
 
   sequencing:
@@ -134,7 +133,7 @@ ml:
   dataset:
     # --- Data Source ---
     data_root: *train_base_data_path
-    target_batch_size: &target_batch_size 50
+    target_batch_size: &target_batch_size 250
     dataset_key: 'token'
     random_seed: *global_seed
 
@@ -164,7 +163,7 @@ ml:
 
     # --- Option B: RANDOM strategy ---
     # Randomly select experiments for test/val
-    test_val_random_experiments: 0.2        # Count (>=1) or percentage (0-1), e.g., 3 or 0.1 for 10%
+    test_val_random_experiments: 0.3        # Count (>=1) or percentage (0-1), e.g., 3 or 0.1 for 10%
     test_val_multi_session: true            # Prefer experiments from different sessions
 
     # =========================================
@@ -188,8 +187,8 @@ ml:
     balance_strategy: "oversample"          # (unused when balance_classes=false)
 
     oversample_config:
-      method: "mixed"                     # duplicate | augment | mixed
-      target_ratio: 0.4                     # 1.0 = match majority class count
+      method: "augment"                     # duplicate | augment | mixed
+      target_ratio: 0.2                     # 1.0 = match majority class count
       augment_ratio: 0.3                    # For 'mixed': ratio of augmented vs duplicated
 
       # Augmentation settings (semantically preserving transforms)
@@ -204,7 +203,10 @@ ml:
           enabled: true
           max_shift: 3                      # Max temporal shift in samples
 
-  # Model Architecture
+
+  # =====================================================================
+  # UNET CONFIGURATION (Multihead Classifier)
+  # =====================================================================
   model:
     type: "UNetAutoencoder"           # "CNNAutoencoder", "UNetAutoencoder", "TransformerAutoencoder"
     channels_per_layer: [32, 64, 128]       # 3 levels (preserves temporal dim=2 at bottleneck)
@@ -213,7 +215,7 @@ ml:
     num_layers: 4                  # For transformer models
 
   # =====================================================================
-  # CLASSIFIER CONFIGURATION (for embedding-based classification)
+  # XGB CLASSIFIER CONFIGURATION (for embedding-based classification)
   # =====================================================================
   classifier:
     type: "XGBoost"
@@ -251,7 +253,7 @@ ml:
     #   1 = 16→32→64 channels,  ~48K params (default, lightweight)
     #   2 = 32→64→128 channels, ~187K params (recommended, similar to USMModeCNN)
     #   4 = 64→128→256 channels, ~740K params (large)
-    width_multiplier: 2
+    width_multiplier: 1
 
     # Kernel scale: scales depth kernels to maintain ~10% receptive field
     # Match to decimation factor:
@@ -259,11 +261,7 @@ ml:
     #   decimation=5  (depth=260):  kernel_scale=2  → kernels (26,3)→(14,3)→(10,3)
     #   decimation=2  (depth=650):  kernel_scale=5  → kernels (65,3)→(35,3)→(25,3)
     #   decimation=1  (depth=1300): kernel_scale=10 → kernels (130,3)→(70,3)→(50,3)
-    kernel_scale: 5
-
-    # Regularization
-    dropout: 0.6              # FC head dropout
-    spatial_dropout: 0.2      # Dropout2d between conv blocks
+    kernel_scale: 1
 
   # =====================================================================
   # TRAINING CONFIGURATION
@@ -312,13 +310,13 @@ ml:
     # Checkpointing
     checkpointing:
       save_best: true
-      save_every_n_epochs: 10        # Save regular checkpoint every N epochs
+      save_every_n_epochs: 5        # Save regular checkpoint every N epochs
       checkpoint_path: *train_base_data_path
 
     # Restart Configuration
     restart:
       enable: true
-      save_restart_every: 10         # Save restart checkpoint every N epochs
+      save_restart_every: 5         # Save restart checkpoint every N epochs
 
     # Validation and Evaluation
     validation:

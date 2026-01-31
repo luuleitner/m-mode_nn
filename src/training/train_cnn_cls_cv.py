@@ -1,0 +1,565 @@
+"""
+CNN Classifier Training with K-Fold Cross-Validation
+
+Trains a direct CNN classifier across multiple CV folds and aggregates results.
+Requires pre-computed folds from: python -m src.data.precompute_kfolds
+
+Features:
+- Trains all folds sequentially or a single fold (for parallel execution)
+- Aggregates results across folds (mean ± std)
+- Per-fold checkpoints and metrics
+- Combined CV results summary
+
+Usage:
+    # Train all folds
+    python -m src.training.train_cnn_cls_cv --config config/config.yaml
+
+    # Train specific fold (for parallel/cluster execution)
+    python -m src.training.train_cnn_cls_cv --config config/config.yaml --fold 0
+
+    # Use custom CV directory
+    python -m src.training.train_cnn_cls_cv --config config/config.yaml --cv-dir /path/to/cv_folds
+
+    # Aggregate results only (after parallel fold training)
+    python -m src.training.train_cnn_cls_cv --config config/config.yaml --aggregate-only
+"""
+
+import os
+import sys
+import argparse
+import pickle
+import json
+import glob
+import yaml
+from datetime import datetime
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+import numpy as np
+
+# Use non-interactive backend
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+from sklearn.metrics import classification_report
+
+# Add project root to path
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, project_root)
+
+from config.configurator import load_config, setup_environment
+from src.models.direct_cnn_classifier import DirectCNNClassifier
+from src.training.train_cnn_cls import DirectClassifierTrainer, CLASS_NAMES
+
+import utils.logging_config as logconf
+logger = logconf.get_logger("TRAIN_CNN_CV")
+
+# Optional: WandB
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
+# Load class config from centralized config
+_label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+with open(_label_config_path) as _f:
+    _label_config = yaml.safe_load(_f)
+_classes_config = _label_config.get('classes', {})
+CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(_classes_config.get('num_classes', 3))]
+# Default colors for up to 5 classes
+DEFAULT_COLORS = ['#808080', '#2ecc71', '#e74c3c', '#3498db', '#f39c12']  # gray, green, red, blue, orange
+
+
+def load_fold_datasets(fold_dir):
+    """Load train/val/test datasets from a fold directory."""
+    train_path = os.path.join(fold_dir, 'train_ds.pkl')
+    val_path = os.path.join(fold_dir, 'val_ds.pkl')
+    test_path = os.path.join(fold_dir, 'test_ds.pkl')
+
+    for path, name in [(train_path, 'Train'), (val_path, 'Val'), (test_path, 'Test')]:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"{name} dataset not found: {path}")
+
+    with open(train_path, 'rb') as f:
+        train_ds = pickle.load(f)
+    with open(val_path, 'rb') as f:
+        val_ds = pickle.load(f)
+    with open(test_path, 'rb') as f:
+        test_ds = pickle.load(f)
+
+    return train_ds, val_ds, test_ds
+
+
+def load_fold_info(fold_dir):
+    """Load fold metadata."""
+    info_path = os.path.join(fold_dir, 'fold_info.json')
+    if os.path.exists(info_path):
+        with open(info_path, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def create_model(config):
+    """Create a fresh model instance."""
+    input_pulses = config.preprocess.tokenization.window
+    input_depth = 130  # After decimation
+
+    # Load label config for num_classes
+    label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+    with open(label_config_path) as f:
+        label_config = yaml.safe_load(f)
+    num_classes = label_config['classes']['num_classes']
+
+    # Get dropout settings from config
+    dropout_config = config.ml.training.regularization.get('dropout', {})
+    spatial_dropout = dropout_config.get('spatial', 0.1)
+    fc_dropout = dropout_config.get('fc', 0.5)
+
+    model = DirectCNNClassifier(
+        in_channels=3,
+        input_pulses=input_pulses,
+        input_depth=input_depth,
+        num_classes=num_classes,
+        dropout=fc_dropout,
+        spatial_dropout=spatial_dropout
+    )
+    return model
+
+
+def train_single_fold(config, fold_dir, fold_idx, device, args):
+    """Train a single fold and return results."""
+    logger.info(f"\n{'='*60}")
+    logger.info(f"TRAINING FOLD {fold_idx}")
+    logger.info(f"{'='*60}")
+    logger.info(f"Fold directory: {fold_dir}")
+
+    # Load fold info
+    fold_info = load_fold_info(fold_dir)
+    if fold_info:
+        strategy = fold_info.get('strategy', 'unknown')
+        if strategy == 'experiment_kfold':
+            logger.info(f"Strategy: {strategy}, holdout experiments: {len(fold_info.get('test_val_experiments', []))}")
+        elif strategy == 'session_loso':
+            logger.info(f"Strategy: {strategy}, holdout session: {fold_info.get('holdout_session')}")
+        elif strategy == 'participant_lopo':
+            logger.info(f"Strategy: {strategy}, holdout participant: {fold_info.get('holdout_participant')}")
+
+    # Load datasets
+    train_ds, val_ds, test_ds = load_fold_datasets(fold_dir)
+    logger.info(f"Train batches: {len(train_ds)}, Val batches: {len(val_ds)}, Test batches: {len(test_ds)}")
+
+    # Create data loaders
+    resource_cfg = config.get_resource_config()
+    train_loader = DataLoader(
+        train_ds, batch_size=None, shuffle=True,
+        num_workers=resource_cfg['num_workers'],
+        pin_memory=resource_cfg['pin_memory']
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=None, shuffle=False,
+        num_workers=resource_cfg['num_workers'],
+        pin_memory=resource_cfg['pin_memory']
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=None, shuffle=False,
+        num_workers=resource_cfg['num_workers'],
+        pin_memory=resource_cfg['pin_memory']
+    )
+
+    # Create fresh model for this fold
+    model = create_model(config)
+    logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    # Output directory for this fold
+    fold_output_dir = os.path.join(fold_dir, 'training_output')
+
+    # Create trainer
+    trainer = DirectClassifierTrainer(
+        model=model,
+        config=config,
+        device=device,
+        output_dir=fold_output_dir,
+        use_wandb=not args.no_wandb
+    )
+
+    # Override WandB run name to include fold
+    if trainer.use_wandb and WANDB_AVAILABLE:
+        # Will be set in init_wandb, but we can modify the config
+        pass
+
+    # Train
+    history = trainer.train(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        test_loader=test_loader,
+        restart=args.restart
+    )
+
+    # Collect results
+    fold_results = {
+        'fold_idx': fold_idx,
+        'fold_dir': fold_dir,
+        'fold_info': fold_info,
+        'best_val_loss': trainer.best_val_loss,
+        'best_val_acc': trainer.best_val_acc,
+        'best_epoch': trainer.best_epoch,
+        'total_epochs': trainer.current_epoch + 1,
+    }
+
+    # Load test predictions for detailed metrics
+    test_pred_path = os.path.join(fold_output_dir, 'test_predictions.npz')
+    if os.path.exists(test_pred_path):
+        test_data = np.load(test_pred_path)
+        predictions = test_data['predictions']
+        labels = test_data['labels']
+
+        # Compute metrics
+        fold_results['test_accuracy'] = (predictions == labels).mean()
+        fold_results['test_predictions'] = predictions.tolist()
+        fold_results['test_labels'] = labels.tolist()
+
+        # Per-class accuracy
+        per_class_acc = {}
+        for cls in range(3):
+            mask = labels == cls
+            if mask.sum() > 0:
+                per_class_acc[CLASS_NAMES[cls]] = float((predictions[mask] == cls).mean())
+            else:
+                per_class_acc[CLASS_NAMES[cls]] = 0.0
+        fold_results['per_class_accuracy'] = per_class_acc
+
+    # Save fold results
+    results_path = os.path.join(fold_output_dir, 'fold_results.json')
+    with open(results_path, 'w') as f:
+        # Remove non-serializable items
+        serializable_results = {k: v for k, v in fold_results.items()
+                               if k not in ['test_predictions', 'test_labels']}
+        json.dump(serializable_results, f, indent=2)
+
+    logger.info(f"\nFold {fold_idx} complete:")
+    logger.info(f"  Best val accuracy: {fold_results['best_val_acc']:.2%}")
+    if 'test_accuracy' in fold_results:
+        logger.info(f"  Test accuracy: {fold_results['test_accuracy']:.2%}")
+
+    return fold_results
+
+
+def aggregate_cv_results(cv_dir, fold_results):
+    """Aggregate results across all folds."""
+    logger.info(f"\n{'='*60}")
+    logger.info("CROSS-VALIDATION RESULTS SUMMARY")
+    logger.info(f"{'='*60}")
+
+    n_folds = len(fold_results)
+
+    # Extract metrics
+    val_accs = [r['best_val_acc'] for r in fold_results]
+    test_accs = [r.get('test_accuracy', 0) for r in fold_results if 'test_accuracy' in r]
+
+    # Per-class accuracy aggregation
+    per_class_accs = {name: [] for name in CLASS_NAMES}
+    for r in fold_results:
+        if 'per_class_accuracy' in r:
+            for name in CLASS_NAMES:
+                if name in r['per_class_accuracy']:
+                    per_class_accs[name].append(r['per_class_accuracy'][name])
+
+    # Build summary
+    summary = {
+        'n_folds': n_folds,
+        'cv_dir': cv_dir,
+        'aggregated_at': datetime.now().isoformat(),
+        'validation_accuracy': {
+            'mean': float(np.mean(val_accs)),
+            'std': float(np.std(val_accs)),
+            'min': float(np.min(val_accs)),
+            'max': float(np.max(val_accs)),
+            'per_fold': val_accs
+        },
+        'test_accuracy': {
+            'mean': float(np.mean(test_accs)) if test_accs else 0,
+            'std': float(np.std(test_accs)) if test_accs else 0,
+            'min': float(np.min(test_accs)) if test_accs else 0,
+            'max': float(np.max(test_accs)) if test_accs else 0,
+            'per_fold': test_accs
+        },
+        'per_class_accuracy': {}
+    }
+
+    for name, accs in per_class_accs.items():
+        if accs:
+            summary['per_class_accuracy'][name] = {
+                'mean': float(np.mean(accs)),
+                'std': float(np.std(accs)),
+                'per_fold': accs
+            }
+
+    # Print summary
+    logger.info(f"\nNumber of folds: {n_folds}")
+    logger.info(f"\nValidation Accuracy:")
+    logger.info(f"  Mean ± Std: {summary['validation_accuracy']['mean']:.2%} ± {summary['validation_accuracy']['std']:.2%}")
+    logger.info(f"  Range: [{summary['validation_accuracy']['min']:.2%}, {summary['validation_accuracy']['max']:.2%}]")
+    logger.info(f"  Per fold: {[f'{a:.2%}' for a in val_accs]}")
+
+    if test_accs:
+        logger.info(f"\nTest Accuracy:")
+        logger.info(f"  Mean ± Std: {summary['test_accuracy']['mean']:.2%} ± {summary['test_accuracy']['std']:.2%}")
+        logger.info(f"  Range: [{summary['test_accuracy']['min']:.2%}, {summary['test_accuracy']['max']:.2%}]")
+        logger.info(f"  Per fold: {[f'{a:.2%}' for a in test_accs]}")
+
+    logger.info(f"\nPer-Class Test Accuracy:")
+    for name, data in summary['per_class_accuracy'].items():
+        logger.info(f"  {name}: {data['mean']:.2%} ± {data['std']:.2%}")
+
+    # Save summary
+    summary_path = os.path.join(cv_dir, 'cv_results.json')
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+    logger.info(f"\nResults saved to: {summary_path}")
+
+    # Create summary plot
+    create_cv_summary_plot(cv_dir, summary, fold_results)
+
+    return summary
+
+
+def create_cv_summary_plot(cv_dir, summary, fold_results):
+    """Create visualization of CV results."""
+    n_folds = summary['n_folds']
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    # Plot 1: Accuracy per fold
+    ax = axes[0]
+    x = range(n_folds)
+    val_accs = summary['validation_accuracy']['per_fold']
+    test_accs = summary['test_accuracy']['per_fold']
+
+    width = 0.35
+    ax.bar([i - width/2 for i in x], val_accs, width, label='Validation', color='steelblue')
+    if test_accs:
+        ax.bar([i + width/2 for i in x], test_accs, width, label='Test', color='darkorange')
+
+    ax.axhline(y=summary['validation_accuracy']['mean'], color='steelblue', linestyle='--', alpha=0.7)
+    if test_accs:
+        ax.axhline(y=summary['test_accuracy']['mean'], color='darkorange', linestyle='--', alpha=0.7)
+
+    ax.set_xlabel('Fold')
+    ax.set_ylabel('Accuracy')
+    ax.set_title('Accuracy per Fold')
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'Fold {i}' for i in x])
+    ax.legend()
+    ax.set_ylim(0, 1)
+    ax.grid(True, alpha=0.3)
+
+    # Plot 2: Per-class accuracy
+    ax = axes[1]
+    class_names = list(summary['per_class_accuracy'].keys())
+    means = [summary['per_class_accuracy'][n]['mean'] for n in class_names]
+    stds = [summary['per_class_accuracy'][n]['std'] for n in class_names]
+
+    colors = DEFAULT_COLORS[:len(class_names)]
+    bars = ax.bar(class_names, means, yerr=stds, capsize=5, color=colors)
+    ax.set_ylabel('Accuracy')
+    ax.set_title('Per-Class Test Accuracy (Mean ± Std)')
+    ax.set_ylim(0, 1)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Add value labels
+    for bar, mean, std in zip(bars, means, stds):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + std + 0.02,
+                f'{mean:.1%}', ha='center', va='bottom', fontsize=10)
+
+    # Plot 3: Summary statistics
+    ax = axes[2]
+    ax.axis('off')
+
+    stats_text = f"""
+Cross-Validation Summary
+{'='*30}
+
+Folds: {n_folds}
+
+Validation Accuracy:
+  Mean: {summary['validation_accuracy']['mean']:.2%}
+  Std:  {summary['validation_accuracy']['std']:.2%}
+
+Test Accuracy:
+  Mean: {summary['test_accuracy']['mean']:.2%}
+  Std:  {summary['test_accuracy']['std']:.2%}
+
+Per-Class (Test):
+"""
+    for name, data in summary['per_class_accuracy'].items():
+        stats_text += f"  {name}: {data['mean']:.2%} ± {data['std']:.2%}\n"
+
+    ax.text(0.1, 0.9, stats_text, transform=ax.transAxes, fontsize=11,
+            verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+
+    # Save plot
+    plot_path = os.path.join(cv_dir, 'cv_summary.png')
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    logger.info(f"Summary plot saved to: {plot_path}")
+
+
+def collect_existing_fold_results(cv_dir, fold_dirs):
+    """Collect results from already-trained folds."""
+    fold_results = []
+
+    for fold_dir in fold_dirs:
+        fold_idx = int(os.path.basename(fold_dir).split('_')[1])
+        results_path = os.path.join(fold_dir, 'training_output', 'fold_results.json')
+
+        if os.path.exists(results_path):
+            with open(results_path, 'r') as f:
+                result = json.load(f)
+                result['fold_idx'] = fold_idx
+                fold_results.append(result)
+            logger.info(f"Loaded results for fold {fold_idx}")
+        else:
+            logger.warning(f"No results found for fold {fold_idx} at {results_path}")
+
+    # Sort by fold index
+    fold_results.sort(key=lambda x: x['fold_idx'])
+
+    return fold_results
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Train CNN Classifier with K-Fold Cross-Validation',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Train all folds
+  python -m src.training.train_cnn_cls_cv --config config/config.yaml
+
+  # Train specific fold (for parallel execution)
+  python -m src.training.train_cnn_cls_cv --config config/config.yaml --fold 0
+
+  # Aggregate results after parallel training
+  python -m src.training.train_cnn_cls_cv --config config/config.yaml --aggregate-only
+
+  # Custom CV directory
+  python -m src.training.train_cnn_cls_cv --config config/config.yaml --cv-dir /path/to/cv_folds
+        """
+    )
+    parser.add_argument('--config', '-c', type=str, required=True,
+                        help='Path to config YAML')
+    parser.add_argument('--cv-dir', type=str, default=None,
+                        help='Path to CV folds directory (overrides config)')
+    parser.add_argument('--fold', type=int, default=None,
+                        help='Train only this specific fold (for parallel execution)')
+    parser.add_argument('--aggregate-only', action='store_true',
+                        help='Only aggregate results from existing fold training')
+    parser.add_argument('--no-wandb', action='store_true',
+                        help='Disable WandB logging')
+    parser.add_argument('--restart', '-r', action='store_true',
+                        help='Restart from latest checkpoint')
+
+    args = parser.parse_args()
+
+    # Load config
+    config = load_config(args.config, create_dirs=False)
+    setup_environment(config)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Using device: {device}")
+
+    # Determine CV directory
+    if args.cv_dir:
+        cv_dir = args.cv_dir
+    else:
+        data_root = config.get_train_data_root()
+        cv_config = getattr(config, 'cross_validation', None)
+        if cv_config:
+            output_subdir = getattr(cv_config, 'output_subdir', 'cv_folds')
+        else:
+            output_subdir = 'cv_folds'
+        cv_dir = os.path.join(data_root, output_subdir)
+
+    if not os.path.exists(cv_dir):
+        logger.error(f"CV directory not found: {cv_dir}")
+        logger.error("Run 'python -m src.data.precompute_kfolds --config config/config.yaml' first")
+        return 1
+
+    # Find fold directories
+    fold_dirs = sorted(glob.glob(os.path.join(cv_dir, 'fold_*')))
+    if not fold_dirs:
+        logger.error(f"No fold directories found in {cv_dir}")
+        return 1
+
+    n_folds = len(fold_dirs)
+    logger.info(f"Found {n_folds} folds in {cv_dir}")
+
+    # Load CV config
+    cv_config_path = os.path.join(cv_dir, 'cv_config.json')
+    if os.path.exists(cv_config_path):
+        with open(cv_config_path, 'r') as f:
+            cv_run_config = json.load(f)
+        logger.info(f"CV Strategy: {cv_run_config.get('strategy', 'unknown')}")
+
+    # Mode: aggregate only
+    if args.aggregate_only:
+        logger.info("Aggregating results from existing fold training...")
+        fold_results = collect_existing_fold_results(cv_dir, fold_dirs)
+        if fold_results:
+            aggregate_cv_results(cv_dir, fold_results)
+        else:
+            logger.error("No fold results found to aggregate")
+            return 1
+        return 0
+
+    # Mode: single fold
+    if args.fold is not None:
+        if args.fold < 0 or args.fold >= n_folds:
+            logger.error(f"Invalid fold index {args.fold}. Must be 0-{n_folds-1}")
+            return 1
+
+        fold_dir = fold_dirs[args.fold]
+        fold_results = [train_single_fold(config, fold_dir, args.fold, device, args)]
+
+        logger.info(f"\nFold {args.fold} training complete.")
+        logger.info(f"To aggregate all results after training all folds, run:")
+        logger.info(f"  python -m src.training.train_cnn_cls_cv -c {args.config} --aggregate-only")
+        return 0
+
+    # Mode: train all folds sequentially
+    logger.info(f"\n{'='*60}")
+    logger.info("STARTING K-FOLD CROSS-VALIDATION TRAINING")
+    logger.info(f"{'='*60}")
+
+    all_fold_results = []
+    for fold_idx, fold_dir in enumerate(fold_dirs):
+        try:
+            result = train_single_fold(config, fold_dir, fold_idx, device, args)
+            all_fold_results.append(result)
+        except Exception as e:
+            logger.error(f"Failed to train fold {fold_idx}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    # Aggregate results
+    if all_fold_results:
+        aggregate_cv_results(cv_dir, all_fold_results)
+    else:
+        logger.error("No folds completed successfully")
+        return 1
+
+    logger.info(f"\nCross-validation training complete!")
+    logger.info(f"Results saved to: {cv_dir}")
+
+    return 0
+
+
+if __name__ == '__main__':
+    exit(main())

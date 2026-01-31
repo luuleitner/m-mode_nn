@@ -300,7 +300,7 @@ class DirectClassifierTrainer:
         return class_counts
 
     def _prepare_batch(self, batch):
-        """Prepare batch for forward pass."""
+        """Prepare batch for forward pass. Returns (data, soft_labels, hard_labels)."""
         if isinstance(batch, dict):
             data = batch['tokens'].to(self.device)
             labels = batch['labels']
@@ -308,18 +308,18 @@ class DirectClassifierTrainer:
             data = batch[0].to(self.device)
             labels = batch[1]
 
-        # Data is already in (B, C, Depth, Pulses) = (B, 3, 130, 10) format
-        # This matches DirectCNNClassifier's expected input format (USMModeCNN-style)
-        # No transpose needed
-
-        # Handle soft labels
+        # Handle soft labels vs hard labels
         if labels.dim() > 1 and labels.shape[-1] > 1:
-            hard_labels = labels.argmax(dim=-1)
+            # Soft labels provided: (B, num_classes) probability distribution
+            soft_labels = labels.float().to(self.device)
+            hard_labels = labels.argmax(dim=-1).long().to(self.device)
         else:
+            # Hard labels provided: convert to one-hot for consistent interface
             hard_labels = labels.squeeze() if labels.dim() > 1 else labels
-        hard_labels = hard_labels.long().to(self.device)
+            hard_labels = hard_labels.long().to(self.device)
+            soft_labels = None  # No soft labels available
 
-        return data, hard_labels
+        return data, soft_labels, hard_labels
 
     def train_epoch(self, train_loader, epoch):
         """Train for one epoch."""
@@ -332,15 +332,19 @@ class DirectClassifierTrainer:
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.epochs} [Train]")
         for batch_idx, batch in enumerate(pbar):
-            data, hard_labels = self._prepare_batch(batch)
+            data, soft_labels, hard_labels = self._prepare_batch(batch)
             batch_size = data.size(0)
 
             # Forward pass
             self.optimizer.zero_grad()
             logits = self.model(data)
 
-            # Loss with class weights and focal loss
-            if self.use_focal_loss:
+            # Loss computation - use soft labels when available
+            if soft_labels is not None:
+                # Soft label cross-entropy: -sum(soft_labels * log_softmax(logits))
+                log_probs = F.log_softmax(logits, dim=-1)
+                loss = -(soft_labels * log_probs).sum(dim=-1).mean()
+            elif self.use_focal_loss:
                 loss = focal_loss(logits, hard_labels, weight=self.class_weights, gamma=self.focal_gamma)
             elif self.class_weights is not None:
                 loss = F.cross_entropy(logits, hard_labels, weight=self.class_weights)
@@ -418,20 +422,15 @@ class DirectClassifierTrainer:
         all_probs = []
 
         for batch in tqdm(val_loader, desc=desc):
-            data, hard_labels = self._prepare_batch(batch)
+            data, soft_labels, hard_labels = self._prepare_batch(batch)
             batch_size = data.size(0)
 
             # Forward
             logits = self.model(data)
             probs = F.softmax(logits, dim=-1)
 
-            # Loss (same as training for consistent metrics)
-            if self.use_focal_loss:
-                loss = focal_loss(logits, hard_labels, weight=self.class_weights, gamma=self.focal_gamma)
-            elif self.class_weights is not None:
-                loss = F.cross_entropy(logits, hard_labels, weight=self.class_weights)
-            else:
-                loss = F.cross_entropy(logits, hard_labels)
+            # Loss - use unweighted cross-entropy for fair validation comparison
+            loss = F.cross_entropy(logits, hard_labels)
 
             # Metrics
             preds = logits.argmax(dim=-1)
@@ -1014,9 +1013,8 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
 
-    # Input dimensions from config
-    input_pulses = config.preprocess.tokenization.window  # 10
-    # input_depth will be inferred from data after loading
+    # Expected dimensions from config (used for validation)
+    expected_pulses = config.preprocess.tokenization.window  # 10
 
     # Load label config for class definitions
     label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
@@ -1029,8 +1027,13 @@ def main():
     cnn_config = config.ml.get('cnn', {})
     width_multiplier = cnn_config.get('width_multiplier', 1)
     kernel_scale = cnn_config.get('kernel_scale', 1)
-    spatial_dropout = cnn_config.get('spatial_dropout', 0.1)
-    fc_dropout = cnn_config.get('dropout', 0.5)
+
+    # Get dropout from training.regularization.dropout
+    training_config = config.ml.get('training', {})
+    reg_config = training_config.get('regularization', {})
+    dropout_config = reg_config.get('dropout', {})
+    spatial_dropout = dropout_config.get('spatial', 0.1)
+    fc_dropout = dropout_config.get('fc', 0.5)
 
     logger.info(f"CNN config: width_multiplier={width_multiplier}, kernel_scale={kernel_scale}, dropout={fc_dropout}, spatial_dropout={spatial_dropout}")
 
@@ -1038,18 +1041,34 @@ def main():
     data_dir = args.data_dir
     train_ds, val_ds, test_ds = load_datasets(config, data_dir=data_dir)
 
-    # Infer input_depth from data
+    # Infer input dimensions from data
     sample = train_ds[0]
     if isinstance(sample, dict):
-        sample_shape = sample['tokens'].shape  # (C, Depth, Pulses)
+        sample_shape = sample['tokens'].shape
     else:
         sample_shape = sample[0].shape
-    input_depth = sample_shape[1]  # Depth dimension
-    logger.info(f"Inferred input_depth={input_depth} from data shape {sample_shape}")
+
+    # Handle both batched (B, C, Depth, Pulses) and unbatched (C, Depth, Pulses) datasets
+    if len(sample_shape) == 4:  # Batched: (B, C, Depth, Pulses)
+        in_channels = sample_shape[1]
+        input_depth = sample_shape[2]
+        input_pulses = sample_shape[3]
+    elif len(sample_shape) == 3:  # Unbatched: (C, Depth, Pulses)
+        in_channels = sample_shape[0]
+        input_depth = sample_shape[1]
+        input_pulses = sample_shape[2]
+    else:
+        raise ValueError(f"Unexpected data shape: {sample_shape}, expected 3D or 4D")
+
+    logger.info(f"Inferred in_channels={in_channels}, input_depth={input_depth}, input_pulses={input_pulses} from data shape {sample_shape}")
+
+    # Validate against config
+    if input_pulses != expected_pulses:
+        logger.warning(f"Data pulses ({input_pulses}) != config window ({expected_pulses}). Using data value.")
 
     # Create model with inferred dimensions
     model = DirectCNNClassifier(
-        in_channels=3,
+        in_channels=in_channels,
         input_pulses=input_pulses,
         input_depth=input_depth,
         num_classes=num_classes,

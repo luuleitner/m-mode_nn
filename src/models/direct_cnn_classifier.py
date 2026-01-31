@@ -163,7 +163,7 @@ class DirectCNNClassifier(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        """Initialize weights with Kaiming initialization."""
+        """Initialize weights with appropriate initialization per layer type."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -173,7 +173,9 @@ class DirectCNNClassifier(nn.Module):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
             elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                # Final classification layer (no ReLU after) uses Xavier
+                # Kaiming is designed for ReLU and creates too-large initial logits
+                nn.init.xavier_uniform_(m.weight)
                 nn.init.zeros_(m.bias)
 
     def forward_backbone(self, x):
