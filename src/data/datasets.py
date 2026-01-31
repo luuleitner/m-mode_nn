@@ -160,9 +160,15 @@ class FilteredSplitH5Dataset(Dataset):
             print(f"Global session filter: -> {len(self.metadata)} sequences")
 
         if experiment_filter is not None:
-            self.metadata = self.metadata[
-                self.metadata['experiment'].isin(experiment_filter)
-            ]
+            # Support both file_path (full paths) and experiment (short names)
+            if any('/' in str(e) or '.h5' in str(e) for e in experiment_filter):
+                self.metadata = self.metadata[
+                    self.metadata['file_path'].isin(experiment_filter)
+                ]
+            else:
+                self.metadata = self.metadata[
+                    self.metadata['experiment'].isin(experiment_filter)
+                ]
             print(f"Global experiment filter: -> {len(self.metadata)} sequences")
 
         if label_filter is not None:
@@ -236,10 +242,18 @@ class FilteredSplitH5Dataset(Dataset):
                 filters_applied.append(f"session={test_val_session_filter}")
 
             if test_val_experiment_filter is not None:
-                test_val_candidates = test_val_candidates[
-                    test_val_candidates['experiment'].isin(test_val_experiment_filter)
-                ]
-                filters_applied.append(f"experiment={test_val_experiment_filter}")
+                # Support both file_path (full paths) and experiment (short names)
+                if any('/' in str(e) or '.h5' in str(e) for e in test_val_experiment_filter):
+                    # Filter values look like file paths
+                    test_val_candidates = test_val_candidates[
+                        test_val_candidates['file_path'].isin(test_val_experiment_filter)
+                    ]
+                else:
+                    # Filter values look like experiment names
+                    test_val_candidates = test_val_candidates[
+                        test_val_candidates['experiment'].isin(test_val_experiment_filter)
+                    ]
+                filters_applied.append(f"experiment_filter={len(test_val_experiment_filter)} items")
 
             if test_val_label_filter is not None:
                 test_val_candidates = test_val_candidates[
@@ -909,6 +923,10 @@ def create_filtered_split_datasets(
         Tuple of (train_dataset, test_dataset, val_dataset)
     """
 
+    # Filter out private kwargs that are handled explicitly for test/val datasets
+    filtered_kwargs = {k: v for k, v in kwargs.items()
+                       if k not in ('_suppress_split_info', '_suppress_metadata_info')}
+
     common_kwargs = {
         'metadata_file': metadata_file,
         'target_batch_size': target_batch_size,
@@ -932,7 +950,7 @@ def create_filtered_split_datasets(
         'balance_classes': balance_classes,
         'balance_strategy': balance_strategy,
         'oversample_config': oversample_config,
-        **kwargs
+        **filtered_kwargs
     }
 
     print("Creating datasets with filtered splitting...")

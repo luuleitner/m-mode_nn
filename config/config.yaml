@@ -14,12 +14,12 @@ global_setting:
       debug:
         level: 2                      # 1, 2, 3
       deterministic:
-        seed: &global_seed 353
+        seed: &global_seed 33
 
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/run_20260131_000712"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/run_20260131_021838"
 
 
 # ========================================
@@ -69,7 +69,7 @@ preprocess:
       factor: 10                      # 50MSPS -> 5MSPS
     logcompression:
       apply: true
-      db: 45
+      db: 50
     normalization:
       apply: true
       method: "peak"
@@ -268,7 +268,7 @@ ml:
   # =====================================================================
   training:
     # Basic Training Parameters
-    epochs: 50
+    epochs: 200
     lr: 0.0001                        # Lower LR to reduce overfitting (was 0.0003)
     weight_decay: 0.02                # Stronger weight decay for regularization (was 0.01)
 
@@ -361,7 +361,7 @@ cross_validation:
   #   Participant 1 has 10 experiments → each fold holds out 2 experiments
   #
   experiment_kfold:
-    participant_filter: null            # Which participant(s) to include [1,2] or null=all
+    participant_filter: null           # Which participant(s) to include [1,2] or null=all
     session_filter: null                # Optionally filter sessions too
     n_folds: 5                          # Number of folds
     test_val_split_ratio: 0.5           # Within holdout: 50% test, 50% val

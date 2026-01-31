@@ -102,10 +102,10 @@ def load_fold_info(fold_dir):
     return {}
 
 
-def create_model(config):
-    """Create a fresh model instance."""
-    input_pulses = config.preprocess.tokenization.window
-    input_depth = 130  # After decimation
+def create_model(config, train_ds):
+    """Create a fresh model instance with dimensions inferred from data."""
+    # Expected dimensions from config (used for validation)
+    expected_pulses = config.preprocess.tokenization.window
 
     # Load label config for num_classes
     label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
@@ -113,18 +113,54 @@ def create_model(config):
         label_config = yaml.safe_load(f)
     num_classes = label_config['classes']['num_classes']
 
-    # Get dropout settings from config
-    dropout_config = config.ml.training.regularization.get('dropout', {})
+    # Get CNN config
+    cnn_config = config.ml.get('cnn', {})
+    width_multiplier = cnn_config.get('width_multiplier', 1)
+    kernel_scale = cnn_config.get('kernel_scale', 1)
+
+    # Get dropout settings from training.regularization.dropout
+    training_config = config.ml.get('training', {})
+    reg_config = training_config.get('regularization', {})
+    dropout_config = reg_config.get('dropout', {})
     spatial_dropout = dropout_config.get('spatial', 0.1)
     fc_dropout = dropout_config.get('fc', 0.5)
 
+    # Infer input dimensions from data
+    sample = train_ds[0]
+    if isinstance(sample, dict):
+        sample_shape = sample['tokens'].shape
+    else:
+        sample_shape = sample[0].shape
+
+    # Handle both batched (B, C, Depth, Pulses) and unbatched (C, Depth, Pulses) datasets
+    if len(sample_shape) == 4:  # Batched: (B, C, Depth, Pulses)
+        in_channels = sample_shape[1]
+        input_depth = sample_shape[2]
+        input_pulses = sample_shape[3]
+    elif len(sample_shape) == 3:  # Unbatched: (C, Depth, Pulses)
+        in_channels = sample_shape[0]
+        input_depth = sample_shape[1]
+        input_pulses = sample_shape[2]
+    else:
+        raise ValueError(f"Unexpected data shape: {sample_shape}, expected 3D or 4D")
+
+    logger.info(f"Inferred in_channels={in_channels}, input_depth={input_depth}, input_pulses={input_pulses} from data shape {sample_shape}")
+
+    # Validate against config
+    if input_pulses != expected_pulses:
+        logger.warning(f"Data pulses ({input_pulses}) != config window ({expected_pulses}). Using data value.")
+
+    logger.info(f"CNN config: width_multiplier={width_multiplier}, kernel_scale={kernel_scale}, dropout={fc_dropout}, spatial_dropout={spatial_dropout}")
+
     model = DirectCNNClassifier(
-        in_channels=3,
+        in_channels=in_channels,
         input_pulses=input_pulses,
         input_depth=input_depth,
         num_classes=num_classes,
         dropout=fc_dropout,
-        spatial_dropout=spatial_dropout
+        spatial_dropout=spatial_dropout,
+        width_multiplier=width_multiplier,
+        kernel_scale=kernel_scale
     )
     return model
 
@@ -169,8 +205,9 @@ def train_single_fold(config, fold_dir, fold_idx, device, args):
         pin_memory=resource_cfg['pin_memory']
     )
 
-    # Create fresh model for this fold
-    model = create_model(config)
+    # Create fresh model for this fold (infer dimensions from data)
+    model = create_model(config, train_ds)
+    model.print_architecture()
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Output directory for this fold

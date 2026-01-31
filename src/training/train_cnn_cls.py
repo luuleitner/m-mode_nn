@@ -429,8 +429,16 @@ class DirectClassifierTrainer:
             logits = self.model(data)
             probs = F.softmax(logits, dim=-1)
 
-            # Loss - use unweighted cross-entropy for fair validation comparison
-            loss = F.cross_entropy(logits, hard_labels)
+            # Loss - MUST match training loss for valid comparison
+            if soft_labels is not None:
+                log_probs = F.log_softmax(logits, dim=-1)
+                loss = -(soft_labels * log_probs).sum(dim=-1).mean()
+            elif self.use_focal_loss:
+                loss = focal_loss(logits, hard_labels, weight=self.class_weights, gamma=self.focal_gamma)
+            elif self.class_weights is not None:
+                loss = F.cross_entropy(logits, hard_labels, weight=self.class_weights)
+            else:
+                loss = F.cross_entropy(logits, hard_labels)
 
             # Metrics
             preds = logits.argmax(dim=-1)
@@ -442,6 +450,20 @@ class DirectClassifierTrainer:
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(hard_labels.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
+
+        # Handle empty validation set
+        if total_samples == 0:
+            logger.warning("Validation set is empty (0 samples)!")
+            return {
+                'loss': 0.0,
+                'accuracy': 0.0,
+                'balanced_accuracy': 0.0,
+                'per_class_acc': {},
+                'per_class_f1': {},
+                'predictions': [],
+                'labels': [],
+                'probabilities': []
+            }
 
         avg_loss = total_loss / total_samples
         avg_acc = total_correct / total_samples

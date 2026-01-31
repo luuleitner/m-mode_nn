@@ -24,6 +24,14 @@ import yaml
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
+# Load label config for class names
+_label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+with open(_label_config_path) as _f:
+    _label_config = yaml.safe_load(_f)
+_classes_config = _label_config.get('classes', {})
+NUM_CLASSES = _classes_config.get('num_classes', 5)
+CLASS_NAMES = {i: _classes_config['names'].get(i, f'class_{i}') for i in range(NUM_CLASSES)}
+
 
 def load_config(config_path):
     """Load configuration from yaml file."""
@@ -73,22 +81,19 @@ def get_label_counts(h5_path):
         unique, counts = np.unique(hard_labels, return_counts=True)
         count_dict = {int(u): int(c) for u, c in zip(unique, counts)}
 
-        # Ensure all classes 0, 1, 2 are present
-        for cls in [0, 1, 2]:
+        # Ensure all classes are present
+        for cls in range(NUM_CLASSES):
             if cls not in count_dict:
                 count_dict[cls] = 0
 
         total = int(np.sum(counts))
 
-        return {
-            'total': total,
-            'class_0': count_dict[0],
-            'class_1': count_dict[1],
-            'class_2': count_dict[2],
-            'pct_0': 100.0 * count_dict[0] / total if total > 0 else 0,
-            'pct_1': 100.0 * count_dict[1] / total if total > 0 else 0,
-            'pct_2': 100.0 * count_dict[2] / total if total > 0 else 0,
-        }
+        result = {'total': total}
+        for cls in range(NUM_CLASSES):
+            result[f'class_{cls}'] = count_dict[cls]
+            result[f'pct_{cls}'] = 100.0 * count_dict[cls] / total if total > 0 else 0
+
+        return result
 
 
 def compute_statistics(data_path):
@@ -131,69 +136,55 @@ def compute_statistics(data_path):
     df_exp = df_exp.sort_values(['session', 'participant', 'experiment'])
 
     # Aggregate by session
-    df_session = df_exp.groupby('session').agg({
-        'total': 'sum',
-        'class_0': 'sum',
-        'class_1': 'sum',
-        'class_2': 'sum',
-        'experiment': 'count'  # Count experiments per session
-    }).reset_index()
+    agg_dict = {'total': 'sum', 'experiment': 'count'}
+    for cls in range(NUM_CLASSES):
+        agg_dict[f'class_{cls}'] = 'sum'
+
+    df_session = df_exp.groupby('session').agg(agg_dict).reset_index()
     df_session = df_session.rename(columns={'experiment': 'num_experiments'})
 
     # Recalculate percentages for session aggregates
-    df_session['pct_0'] = 100.0 * df_session['class_0'] / df_session['total']
-    df_session['pct_1'] = 100.0 * df_session['class_1'] / df_session['total']
-    df_session['pct_2'] = 100.0 * df_session['class_2'] / df_session['total']
+    for cls in range(NUM_CLASSES):
+        df_session[f'pct_{cls}'] = 100.0 * df_session[f'class_{cls}'] / df_session['total']
 
     return df_exp, df_session
 
 
 def compute_summary_statistics(df_exp, df_session):
     """Compute overall summary statistics."""
+    total_samples = df_exp['total'].sum()
+
+    # Build overall class distribution
+    overall = {}
+    for cls in range(NUM_CLASSES):
+        overall[f'class_{cls}'] = int(df_exp[f'class_{cls}'].sum())
+        overall[f'pct_{cls}'] = float(100.0 * df_exp[f'class_{cls}'].sum() / total_samples) if total_samples > 0 else 0
+
+    # Build per-experiment statistics
+    per_experiment = {
+        'samples': {
+            'mean': float(df_exp['total'].mean()),
+            'std': float(df_exp['total'].std()),
+            'min': int(df_exp['total'].min()),
+            'max': int(df_exp['total'].max()),
+        }
+    }
+    for cls in range(NUM_CLASSES):
+        per_experiment[f'pct_{cls}'] = {
+            'mean': float(df_exp[f'pct_{cls}'].mean()),
+            'std': float(df_exp[f'pct_{cls}'].std()),
+            'min': float(df_exp[f'pct_{cls}'].min()),
+            'max': float(df_exp[f'pct_{cls}'].max()),
+        }
+
     summary = {
-        'total_samples': int(df_exp['total'].sum()),
+        'total_samples': int(total_samples),
         'total_experiments': len(df_exp),
         'total_sessions': len(df_session),
-
-        # Overall class distribution
-        'overall': {
-            'class_0': int(df_exp['class_0'].sum()),
-            'class_1': int(df_exp['class_1'].sum()),
-            'class_2': int(df_exp['class_2'].sum()),
-            'pct_0': float(100.0 * df_exp['class_0'].sum() / df_exp['total'].sum()),
-            'pct_1': float(100.0 * df_exp['class_1'].sum() / df_exp['total'].sum()),
-            'pct_2': float(100.0 * df_exp['class_2'].sum() / df_exp['total'].sum()),
-        },
-
-        # Per-experiment statistics
-        'per_experiment': {
-            'samples': {
-                'mean': float(df_exp['total'].mean()),
-                'std': float(df_exp['total'].std()),
-                'min': int(df_exp['total'].min()),
-                'max': int(df_exp['total'].max()),
-            },
-            'pct_0': {
-                'mean': float(df_exp['pct_0'].mean()),
-                'std': float(df_exp['pct_0'].std()),
-                'min': float(df_exp['pct_0'].min()),
-                'max': float(df_exp['pct_0'].max()),
-            },
-            'pct_1': {
-                'mean': float(df_exp['pct_1'].mean()),
-                'std': float(df_exp['pct_1'].std()),
-                'min': float(df_exp['pct_1'].min()),
-                'max': float(df_exp['pct_1'].max()),
-            },
-            'pct_2': {
-                'mean': float(df_exp['pct_2'].mean()),
-                'std': float(df_exp['pct_2'].std()),
-                'min': float(df_exp['pct_2'].min()),
-                'max': float(df_exp['pct_2'].max()),
-            },
-        },
-
-        # Per-session statistics
+        'num_classes': NUM_CLASSES,
+        'class_names': CLASS_NAMES,
+        'overall': overall,
+        'per_experiment': per_experiment,
         'per_session': {
             'experiments': {
                 'mean': float(df_session['num_experiments'].mean()),
@@ -223,22 +214,26 @@ def print_summary(summary, df_session):
     print(f"  Total samples:     {summary['total_samples']:,}")
     print(f"  Total experiments: {summary['total_experiments']}")
     print(f"  Total sessions:    {summary['total_sessions']}")
+    print(f"  Number of classes: {summary['num_classes']}")
 
     print(f"\nOverall Class Distribution:")
-    print(f"  Class 0 (neutral):  {summary['overall']['class_0']:>10,}  ({summary['overall']['pct_0']:5.1f}%)")
-    print(f"  Class 1 (up):       {summary['overall']['class_1']:>10,}  ({summary['overall']['pct_1']:5.1f}%)")
-    print(f"  Class 2 (down):     {summary['overall']['class_2']:>10,}  ({summary['overall']['pct_2']:5.1f}%)")
+    for cls in range(NUM_CLASSES):
+        name = CLASS_NAMES.get(cls, f'class_{cls}')
+        count = summary['overall'][f'class_{cls}']
+        pct = summary['overall'][f'pct_{cls}']
+        print(f"  Class {cls} ({name:>8}): {count:>10,}  ({pct:5.1f}%)")
 
     print(f"\nPer-Experiment Statistics:")
     ps = summary['per_experiment']
     print(f"  Samples:   mean={ps['samples']['mean']:.1f}, std={ps['samples']['std']:.1f}, "
           f"min={ps['samples']['min']}, max={ps['samples']['max']}")
-    print(f"  % Class 0: mean={ps['pct_0']['mean']:.1f}%, std={ps['pct_0']['std']:.1f}%")
-    print(f"  % Class 1: mean={ps['pct_1']['mean']:.1f}%, std={ps['pct_1']['std']:.1f}%")
-    print(f"  % Class 2: mean={ps['pct_2']['mean']:.1f}%, std={ps['pct_2']['std']:.1f}%")
+    for cls in range(NUM_CLASSES):
+        pct_key = f'pct_{cls}'
+        print(f"  % Class {cls}: mean={ps[pct_key]['mean']:.1f}%, std={ps[pct_key]['std']:.1f}%")
 
     print(f"\nPer-Session Summary:")
-    print(df_session[['session', 'num_experiments', 'total', 'pct_0', 'pct_1', 'pct_2']].to_string(index=False))
+    cols = ['session', 'num_experiments', 'total'] + [f'pct_{cls}' for cls in range(NUM_CLASSES)]
+    print(df_session[cols].to_string(index=False))
 
 
 def main():
