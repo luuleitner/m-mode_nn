@@ -29,12 +29,21 @@ import pickle
 import json
 import numpy as np
 import pandas as pd
+import yaml
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from config.configurator import load_config
+
+# Load label config for class names
+_label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+with open(_label_config_path) as _f:
+    _label_config = yaml.safe_load(_f)
+_classes_config = _label_config.get('classes', {})
+NUM_CLASSES = _classes_config.get('num_classes', 5)
+CLASS_NAMES = {i: _classes_config['names'].get(i, f'class_{i}') for i in range(NUM_CLASSES)}
 
 
 def load_dataset_pkl(pkl_path):
@@ -52,8 +61,9 @@ def get_split_label_distribution(dataset):
     Returns:
         dict with label counts and percentages
     """
+    empty_counts = {cls: 0 for cls in range(NUM_CLASSES)}
     if dataset is None or len(dataset) == 0:
-        return {'total': 0, 'counts': {0: 0, 1: 0, 2: 0}, 'percentages': {0: 0, 1: 0, 2: 0}}
+        return {'total': 0, 'counts': empty_counts.copy(), 'percentages': empty_counts.copy()}
 
     # Get labels from metadata
     metadata = dataset.metadata
@@ -72,7 +82,7 @@ def get_split_label_distribution(dataset):
         labels = np.array(labels)
 
     total = len(labels)
-    counts = {0: 0, 1: 0, 2: 0}
+    counts = {cls: 0 for cls in range(NUM_CLASSES)}
     for lbl in labels:
         if lbl in counts:
             counts[lbl] += 1
@@ -154,7 +164,7 @@ def analyze_batch_labels(dataset, max_batches=None):
 
             # Per-batch stats
             batch_size = len(hard_labels)
-            counts = {0: 0, 1: 0, 2: 0}
+            counts = {cls: 0 for cls in range(NUM_CLASSES)}
             for lbl in hard_labels:
                 if lbl in counts:
                     counts[lbl] += 1
@@ -162,17 +172,16 @@ def analyze_batch_labels(dataset, max_batches=None):
             # Dominant class in this batch
             dominant_class = max(counts, key=counts.get)
 
-            batch_stats.append({
+            batch_stat = {
                 'batch_idx': batch_idx,
                 'batch_size': batch_size,
-                'label_0': counts[0],
-                'label_1': counts[1],
-                'label_2': counts[2],
-                'pct_0': 100 * counts[0] / batch_size if batch_size > 0 else 0,
-                'pct_1': 100 * counts[1] / batch_size if batch_size > 0 else 0,
-                'pct_2': 100 * counts[2] / batch_size if batch_size > 0 else 0,
                 'dominant_class': dominant_class,
-            })
+            }
+            for cls in range(NUM_CLASSES):
+                batch_stat[f'label_{cls}'] = counts[cls]
+                batch_stat[f'pct_{cls}'] = 100 * counts[cls] / batch_size if batch_size > 0 else 0
+
+            batch_stats.append(batch_stat)
 
         except Exception as e:
             print(f"    Warning: Could not analyze batch {batch_idx}: {e}")
@@ -184,14 +193,25 @@ def analyze_batch_labels(dataset, max_batches=None):
 
     # Overall batch statistics
     total_samples = len(all_labels)
-    overall_counts = {0: all_labels.count(0), 1: all_labels.count(1), 2: all_labels.count(2)}
+    overall_counts = {cls: all_labels.count(cls) for cls in range(NUM_CLASSES)}
+
+    # Batches by dominant class
+    batches_by_dominant = {cls: int((df_batches['dominant_class'] == cls).sum()) for cls in range(NUM_CLASSES)}
+
+    # Per-batch percentage stats
+    per_batch_pct_stats = {}
+    for cls in range(NUM_CLASSES):
+        per_batch_pct_stats[f'label_{cls}'] = {
+            'mean': df_batches[f'pct_{cls}'].mean(),
+            'std': df_batches[f'pct_{cls}'].std()
+        }
 
     return {
         'num_batches_analyzed': len(batch_stats),
         'total_samples': total_samples,
         'overall_distribution': {
             'counts': overall_counts,
-            'percentages': {k: round(100 * v / total_samples, 2) for k, v in overall_counts.items()}
+            'percentages': {k: round(100 * v / total_samples, 2) if total_samples > 0 else 0 for k, v in overall_counts.items()}
         },
         'batch_size': {
             'mean': df_batches['batch_size'].mean(),
@@ -199,16 +219,8 @@ def analyze_batch_labels(dataset, max_batches=None):
             'min': df_batches['batch_size'].min(),
             'max': df_batches['batch_size'].max(),
         },
-        'batches_by_dominant_class': {
-            0: int((df_batches['dominant_class'] == 0).sum()),
-            1: int((df_batches['dominant_class'] == 1).sum()),
-            2: int((df_batches['dominant_class'] == 2).sum()),
-        },
-        'per_batch_pct_stats': {
-            'label_0': {'mean': df_batches['pct_0'].mean(), 'std': df_batches['pct_0'].std()},
-            'label_1': {'mean': df_batches['pct_1'].mean(), 'std': df_batches['pct_1'].std()},
-            'label_2': {'mean': df_batches['pct_2'].mean(), 'std': df_batches['pct_2'].std()},
-        },
+        'batches_by_dominant_class': batches_by_dominant,
+        'per_batch_pct_stats': per_batch_pct_stats,
         'batch_details': df_batches,
     }
 
@@ -286,7 +298,13 @@ def print_analysis(results, data_path):
     print("\n" + "-" * 70)
     print("LABEL DISTRIBUTION PER SPLIT")
     print("-" * 70)
-    print(f"{'Split':<10} {'Label 0 (Noise)':>18} {'Label 1 (Up)':>18} {'Label 2 (Down)':>18}")
+
+    # Build header dynamically
+    header = f"{'Split':<10}"
+    for cls in range(NUM_CLASSES):
+        name = CLASS_NAMES.get(cls, f'Class{cls}')[:8]
+        header += f" {f'L{cls} ({name})':>16}"
+    print(header)
     print("-" * 70)
 
     for split in ['train', 'val', 'test']:
@@ -297,9 +315,10 @@ def print_analysis(results, data_path):
         counts = dist['counts']
         pcts = dist['percentages']
 
-        print(f"{split:<10} {counts[0]:>8,} ({pcts[0]:>5.1f}%) "
-              f"{counts[1]:>8,} ({pcts[1]:>5.1f}%) "
-              f"{counts[2]:>8,} ({pcts[2]:>5.1f}%)")
+        line = f"{split:<10}"
+        for cls in range(NUM_CLASSES):
+            line += f" {counts[cls]:>7,} ({pcts[cls]:>5.1f}%)"
+        print(line)
 
     print("-" * 70)
 
@@ -349,18 +368,17 @@ def print_analysis(results, data_path):
         dist = results['train']['label_distribution']
         total = dist['total']
         counts = dist['counts']
-        num_classes = 3
 
         weights = {}
-        for cls in [0, 1, 2]:
+        for cls in range(NUM_CLASSES):
             if counts[cls] > 0:
-                weights[cls] = round(total / (num_classes * counts[cls]), 4)
+                weights[cls] = round(total / (NUM_CLASSES * counts[cls]), 4)
             else:
                 weights[cls] = 0
 
         for cls, weight in weights.items():
-            label_names = {0: 'Noise', 1: 'Up/Right', 2: 'Down/Left'}
-            print(f"  Class {cls} ({label_names[cls]}): {weight:.4f}")
+            name = CLASS_NAMES.get(cls, f'class_{cls}')
+            print(f"  Class {cls} ({name}): {weight:.4f}")
 
         print("-" * 70)
 
@@ -386,21 +404,24 @@ def print_analysis(results, data_path):
 
         print(f"\n  Label distribution (from actual batch data):")
         dist = batch_info['overall_distribution']
-        for cls in [0, 1, 2]:
-            print(f"    Class {cls}: {dist['counts'][cls]:>8,} ({dist['percentages'][cls]:>5.1f}%)")
+        for cls in range(NUM_CLASSES):
+            name = CLASS_NAMES.get(cls, f'class_{cls}')
+            print(f"    Class {cls} ({name}): {dist['counts'][cls]:>8,} ({dist['percentages'][cls]:>5.1f}%)")
 
         print(f"\n  Per-batch label percentages (mean +/- std):")
         pct_stats = batch_info['per_batch_pct_stats']
-        for cls in [0, 1, 2]:
+        for cls in range(NUM_CLASSES):
             label_key = f'label_{cls}'
-            print(f"    Class {cls}: {pct_stats[label_key]['mean']:>5.1f}% +/- {pct_stats[label_key]['std']:>5.1f}%")
+            name = CLASS_NAMES.get(cls, f'class_{cls}')
+            print(f"    Class {cls} ({name}): {pct_stats[label_key]['mean']:>5.1f}% +/- {pct_stats[label_key]['std']:>5.1f}%")
 
         print(f"\n  Batches by dominant class:")
         dom = batch_info['batches_by_dominant_class']
         total_batches = sum(dom.values())
-        for cls in [0, 1, 2]:
+        for cls in range(NUM_CLASSES):
             pct = 100 * dom[cls] / total_batches if total_batches > 0 else 0
-            print(f"    Class {cls} dominant: {dom[cls]:>4} batches ({pct:>5.1f}%)")
+            name = CLASS_NAMES.get(cls, f'class_{cls}')
+            print(f"    Class {cls} ({name}) dominant: {dom[cls]:>4} batches ({pct:>5.1f}%)")
 
     print("\n" + "=" * 70)
     print()
@@ -461,19 +482,17 @@ def save_analysis(results, data_path):
         dist = results[split]['label_distribution']
         meta = results[split]['metadata']
 
-        csv_data.append({
+        row = {
             'split': split,
             'num_sequences': meta.get('num_sequences', 0),
             'num_batches': meta.get('num_batches', 0),
             'num_experiments': meta.get('num_experiments', 0),
             'num_sessions': meta.get('num_sessions', 0),
-            'label_0_count': dist['counts'][0],
-            'label_1_count': dist['counts'][1],
-            'label_2_count': dist['counts'][2],
-            'label_0_pct': dist['percentages'][0],
-            'label_1_pct': dist['percentages'][1],
-            'label_2_pct': dist['percentages'][2],
-        })
+        }
+        for cls in range(NUM_CLASSES):
+            row[f'label_{cls}_count'] = dist['counts'].get(cls, 0)
+            row[f'label_{cls}_pct'] = dist['percentages'].get(cls, 0)
+        csv_data.append(row)
 
     csv_path = os.path.join(stats_dir, 'dataset_split_summary.csv')
     pd.DataFrame(csv_data).to_csv(csv_path, index=False)
