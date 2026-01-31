@@ -1,20 +1,23 @@
 """
-Processed Data Visualization with 5-Class Labels
+Processed Data Visualization - DIFFERENTIATED Signal (Temporal Gradient)
 
-Shows processed US channels with joystick position, derivative, and 5-class labels.
+Shows the temporal derivative (diff along pulse axis) of processed US channels.
+This reveals CHANGES in the signal over time, which may be more discriminative
+for movement classification than absolute values.
+
 Layout: 6 rows (1 column) - For each of 3 US channels: X-axis row + Y-axis row
 
 Each row contains:
-- US channel heatmap (primary)
+- US channel DERIVATIVE heatmap (dUS/dt along pulse axis)
 - Joystick position trace (secondary y-axis)
 - Joystick derivative trace (secondary y-axis)
 - 5-class label regions (colored rectangles)
 
 Usage:
-    python visualization/visualize_processed_with_labels.py
-    python visualization/visualize_processed_with_labels.py --seed 42
-    python visualization/visualize_processed_with_labels.py --exp-path /path/to/experiment
-    python visualization/visualize_processed_with_labels.py --config config/config.yaml
+    python visualization/visualize_processed_diff.py
+    python visualization/visualize_processed_diff.py --seed 42
+    python visualization/visualize_processed_diff.py --exp-path /path/to/experiment
+    python visualization/visualize_processed_diff.py --config config/config.yaml
 """
 
 import os
@@ -107,8 +110,8 @@ def create_visualization(exp_path, data):
     """
     Create visualization with 6 rows (single column):
     - For each US channel (0, 1, 2):
-      - Row: US heatmap + Joystick X + X derivative + labels
-      - Row: US heatmap + Joystick Y + Y derivative + labels
+      - Row: US DERIVATIVE heatmap + Joystick X + X derivative + labels
+      - Row: US DERIVATIVE heatmap + Joystick Y + Y derivative + labels
     """
     processed_us = data['processed_us']  # (C, Depth, Pulses)
     joystick = data['joystick']  # (4, Pulses) - [trigger, x, y, button]
@@ -118,6 +121,24 @@ def create_visualization(exp_path, data):
     n_channels = processed_us.shape[0]
     depth = processed_us.shape[1]
     n_pulses = processed_us.shape[2]
+
+    # ========================================
+    # COMPUTE TEMPORAL DERIVATIVE OF US SIGNAL
+    # ========================================
+    # Gradient along pulse axis (axis=2) shows temporal changes
+    us_diff = np.gradient(processed_us, axis=2)
+
+    # Also compute absolute derivative for comparison
+    us_diff_abs = np.abs(us_diff)
+
+    print(f"US diff shape: {us_diff.shape}")
+    print(f"US diff range: [{us_diff.min():.4f}, {us_diff.max():.4f}]")
+    print(f"US diff abs mean per class:")
+    for cls in range(5):
+        mask = labels == cls
+        if mask.sum() > 0:
+            cls_mean = us_diff_abs[:, :, mask].mean()
+            print(f"  {LABEL_NAMES[cls]}: {cls_mean:.4f}")
 
     # Extract and filter joystick data (same as visualize_labels.py)
     x_raw = joystick[1, :]  # X axis
@@ -134,7 +155,7 @@ def create_visualization(exp_path, data):
     # Normalize derivatives for visualization (scale to similar range as position)
     deriv_scale = max(np.abs(deriv_x).max(), np.abs(deriv_y).max())
     if deriv_scale > 0:
-        deriv_x_scaled = deriv_x / deriv_scale * 50  # Scale to ±50 range
+        deriv_x_scaled = deriv_x / deriv_scale * 50  # Scale to +/-50 range
         deriv_y_scaled = deriv_y / deriv_scale * 50
     else:
         deriv_x_scaled = deriv_x
@@ -143,8 +164,8 @@ def create_visualization(exp_path, data):
     # Build subplot titles
     subplot_titles = []
     for ch in range(n_channels):
-        subplot_titles.append(f'US Ch{ch} + Joystick X + Labels [{depth}×{n_pulses}]')
-        subplot_titles.append(f'US Ch{ch} + Joystick Y + Labels [{depth}×{n_pulses}]')
+        subplot_titles.append(f'dUS/dt Ch{ch} + Joystick X [{depth}x{n_pulses}]')
+        subplot_titles.append(f'dUS/dt Ch{ch} + Joystick Y [{depth}x{n_pulses}]')
 
     # Create figure: 6 rows (2 per channel), 1 column, with secondary y-axis
     n_rows = n_channels * 2
@@ -160,18 +181,27 @@ def create_visualization(exp_path, data):
     session_name = os.path.basename(os.path.dirname(exp_path))
     exp_num = os.path.basename(exp_path)
 
+    # Use diverging colorscale for derivative (negative=blue, zero=white, positive=red)
+    diff_colorscale = 'RdBu_r'  # Red-Blue reversed (red=positive, blue=negative)
+
+    # Compute symmetric color range for derivative
+    diff_max = np.percentile(np.abs(us_diff), 99)  # Use 99th percentile to avoid outliers
+
     for ch in range(n_channels):
         row_x = ch * 2 + 1  # X-axis row
         row_y = ch * 2 + 2  # Y-axis row
 
         # === X-AXIS ROW ===
-        # US heatmap
+        # US DERIVATIVE heatmap (temporal gradient)
         fig.add_trace(
             go.Heatmap(
-                z=processed_us[ch],
-                colorscale='gray',
+                z=us_diff[ch],
+                colorscale=diff_colorscale,
+                zmid=0,  # Center colorscale at zero
+                zmin=-diff_max,
+                zmax=diff_max,
                 showscale=False,
-                name=f'US Ch{ch}'
+                name=f'dUS/dt Ch{ch}'
             ),
             row=row_x, col=1
         )
@@ -213,14 +243,17 @@ def create_visualization(exp_path, data):
         fig.update_xaxes(title_text='Pulses', range=[0, n_pulses], autorange=False, row=row_x, col=1)
 
         # === Y-AXIS ROW ===
-        # US heatmap
+        # US DERIVATIVE heatmap
         fig.add_trace(
             go.Heatmap(
-                z=processed_us[ch],
-                colorscale='gray',
+                z=us_diff[ch],
+                colorscale=diff_colorscale,
+                zmid=0,
+                zmin=-diff_max,
+                zmax=diff_max,
                 showscale=(ch == n_channels - 1),
-                colorbar=dict(title='Amp', x=1.02) if ch == n_channels - 1 else None,
-                name=f'US Ch{ch} (Y)'
+                colorbar=dict(title='dUS/dt', x=1.02) if ch == n_channels - 1 else None,
+                name=f'dUS/dt Ch{ch} (Y)'
             ),
             row=row_y, col=1
         )
@@ -270,7 +303,8 @@ def create_visualization(exp_path, data):
     if config_info['envelope']: processing_parts.append('Env')
     if config_info['logcompression']: processing_parts.append('Log')
     if config_info['normalization']: processing_parts.append(f"Norm:{config_info['normalization']}")
-    if dec_factor > 1: processing_parts.append(f"Dec:÷{dec_factor}")
+    if dec_factor > 1: processing_parts.append(f"Dec:{dec_factor}")
+    processing_parts.append('DIFF')  # Indicate differentiation
 
     # Layout
     fig.update_layout(
@@ -294,11 +328,12 @@ def create_visualization(exp_path, data):
 
     # Info annotation
     info_lines = [
-        f"<b>Session:</b> {session_name}  |  <b>Exp:</b> {exp_num}",
-        f"<b>Processing:</b> {' → '.join(processing_parts)}",
+        f"<b>Session:</b> {session_name}  |  <b>Exp:</b> {exp_num}  |  <b style='color:red'>DIFFERENTIATED SIGNAL (dUS/dt)</b>",
+        f"<b>Processing:</b> {' -> '.join(processing_parts)}",
         f"<b>Labels:</b> {config_info['label_method']} (pos={config_info.get('pp_pos_thresh', 'N/A')}%, deriv={config_info.get('pp_deriv_thresh', 'N/A')}%)",
         f"<b>Distribution:</b> {label_dist}",
-        f"<b>Legend:</b> <span style='color:gray'>■Noise</span> <span style='color:green'>■Up</span> <span style='color:red'>■Down</span> <span style='color:blue'>■Left</span> <span style='color:orange'>■Right</span>"
+        f"<b>Legend:</b> <span style='color:magenta'>Noise</span> <span style='color:green'>Up</span> <span style='color:red'>Down</span> <span style='color:blue'>Left</span> <span style='color:orange'>Right</span>",
+        f"<b>Colorscale:</b> Blue=negative change, White=no change, Red=positive change"
     ]
     fig.add_annotation(
         text="<br>".join(info_lines),
@@ -307,8 +342,8 @@ def create_visualization(exp_path, data):
         showarrow=False,
         font=dict(size=11),
         align="center",
-        bgcolor="rgba(240,240,240,0.9)",
-        bordercolor="gray",
+        bgcolor="rgba(255,240,240,0.9)",  # Light red background to indicate diff view
+        bordercolor="red",
         borderwidth=1,
         borderpad=8
     )
@@ -317,7 +352,7 @@ def create_visualization(exp_path, data):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Visualize processed data with 5-class labels')
+    parser = argparse.ArgumentParser(description='Visualize DIFFERENTIATED processed data with 5-class labels')
     parser.add_argument('--config', type=str, default='config/config.yaml',
                         help='Path to config file')
     parser.add_argument('--seed', type=int, default=None,
@@ -361,10 +396,13 @@ def main():
         print(f"  {LABEL_NAMES[i]:6s}: {count:5d} ({pct:5.1f}%)")
 
     # Create and show visualization
+    print("\nCreating DIFFERENTIATED signal visualization...")
     fig = create_visualization(exp_path, data)
     fig.show()
 
     print("\nVisualization opened in browser")
+    print("NOTE: This shows dUS/dt (temporal derivative)")
+    print("      Blue = signal decreasing, Red = signal increasing, White = stable")
 
 
 if __name__ == '__main__':
