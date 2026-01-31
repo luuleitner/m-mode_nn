@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window10_Stride05_Labels_soft/run_20260131_021838"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window15_Stride05_Labels_soft/run_20260131_142714"
 
 
 # ========================================
@@ -29,8 +29,8 @@ preprocess:
   data:
     basepath: *base_data_path
     id: "Dataset_Envelope_CNN"
-    strategy: "all"                   # all | selection_file
-    selection_file: "/vol/data/2026_wristus_wiicontroller_sgambato/day002/raw/selection_20260129_202647.csv"   # Used when strategy=selection_file (run utils/generate_selection.py)
+    strategy: "selection_file"                   # all | selection_file
+    selection_file:  "/vol/data/2026_wristus_wiicontroller_sgambato/day002/raw/selection_20260129_202647_P000.csv"              # Used when strategy=selection_file (run utils/generate_selection.py)
     save_ftype: "h5"                  # h5, zarr
 
   signal:
@@ -77,7 +77,7 @@ preprocess:
   tokenization:
     tokens2file: true
     startendID: false
-    window: 10
+    window: 15
     stride: 5
     description: "Specifies the tokenization process."
 
@@ -163,7 +163,7 @@ ml:
 
     # --- Option B: RANDOM strategy ---
     # Randomly select experiments for test/val
-    test_val_random_experiments: 0.3        # Count (>=1) or percentage (0-1), e.g., 3 or 0.1 for 10%
+    test_val_random_experiments: 0.2        # Count (>=1) or percentage (0-1), e.g., 3 or 0.1 for 10%
     test_val_multi_session: true            # Prefer experiments from different sessions
 
     # =========================================
@@ -255,14 +255,6 @@ ml:
     #   4 = 64→128→256 channels, ~740K params (large)
     width_multiplier: 1
 
-    # Kernel scale: scales depth kernels to maintain ~10% receptive field
-    # Match to decimation factor:
-    #   decimation=10 (depth=130):  kernel_scale=1  → kernels (13,3)→(7,3)→(5,3)
-    #   decimation=5  (depth=260):  kernel_scale=2  → kernels (26,3)→(14,3)→(10,3)
-    #   decimation=2  (depth=650):  kernel_scale=5  → kernels (65,3)→(35,3)→(25,3)
-    #   decimation=1  (depth=1300): kernel_scale=10 → kernels (130,3)→(70,3)→(50,3)
-    kernel_scale: 1
-
   # =====================================================================
   # TRAINING CONFIGURATION
   # =====================================================================
@@ -295,17 +287,39 @@ ml:
       grad_clip_norm: 1.0            # Gradient clipping norm
       batch_norm: true               # Use batch normalization
       dropout:
-        spatial: 0.1                 # Dropout2d between conv blocks (0.1-0.2 recommended)
-        fc: 0.5                      # Dropout in FC classifier head (0.3-0.5 recommended)
+        spatial: 0.2                 # Dropout2d between conv blocks (0.1-0.2 recommended)
+        fc: 0.3                    # Dropout in FC classifier head (0.3-0.5 recommended)
 
     # Class Imbalance Handling
-    # Use ONE or NONE of these - combining both is usually too aggressive
     imbalance:
       class_weights:
-        enabled: true               # Inverse frequency weighting (--no-weights to disable)
-      focal_loss:
-        enabled: false                # Down-weight easy examples (--no-focal to disable)
-        gamma: 1.5                   # Focusing parameter (higher = more focus on hard examples)
+        enabled: true                 # Enable class weighting in loss function
+
+        # Weighting method: how to compute weights from class counts
+        #   - inverse_frequency: weight = total / (n_classes * count)  [standard, recommended]
+        #   - effective_samples: weight = (1 - β^n) / (1 - β), β=0.999  [from "Class-Balanced Loss" paper]
+        #   - sqrt_inverse: weight = sqrt(total / count)  [less aggressive than inverse]
+        #   - custom: use custom_weights below
+        method: "inverse_frequency"
+
+        # Power scaling: adjusts how aggressively minority classes are weighted
+        #
+        # Given class distribution: Noise=90%, Movement=2.5% each (ratio ~36:1)
+        # Base inverse weights before power: Noise≈0.03, Movement≈1.0
+        #
+        #   power=0.5 (sqrt):  Noise=0.17, Move=1.0  → 6x difference   (gentle, may underfit minority)
+        #   power=1.0 (linear): Noise=0.03, Move=1.0  → 33x difference  (standard, balanced)
+        #   power=1.5 (aggressive): Noise=0.005, Move=1.0 → 200x difference (risks instability)
+        #
+        # Rule of thumb:
+        #   - power < 1.0: Use when minority classes have noisy labels or you want smoother training
+        #   - power = 1.0: Standard choice, theoretically optimal for clean labels
+        #   - power > 1.0: Use when minority classes are critical and you accept some majority degradation
+        power: 1.0
+
+        # Custom weights (only used when method="custom")
+        # Order: [Noise, Up, Down, Left, Right]
+        custom_weights: null          # e.g., [0.1, 1.0, 1.0, 1.0, 1.0]
 
     # Checkpointing
     checkpointing:

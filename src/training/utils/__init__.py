@@ -14,6 +14,11 @@ from .focal_loss import (
     FocalLossWithLabelSmoothing,
     compute_class_weights
 )
+from .losses import (
+    compute_loss,
+    compute_train_loss,
+    compute_eval_loss
+)
 from .threshold_optimizer import (
     find_optimal_threshold,
     apply_threshold,
@@ -32,10 +37,14 @@ __all__ = [
     'plot_roc_curves',
     'plot_precision_recall_curves',
     'plot_embedding_tsne',
-    # Focal loss
+    # Focal loss (legacy, kept for compatibility)
     'FocalLoss',
     'FocalLossWithLabelSmoothing',
     'compute_class_weights',
+    # Unified loss functions
+    'compute_loss',
+    'compute_train_loss',
+    'compute_eval_loss',
     # Threshold optimization
     'find_optimal_threshold',
     'apply_threshold',

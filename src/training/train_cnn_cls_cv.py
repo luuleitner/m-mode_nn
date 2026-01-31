@@ -9,10 +9,14 @@ Features:
 - Aggregates results across folds (mean ± std)
 - Per-fold checkpoints and metrics
 - Combined CV results summary
+- Timestamped run directories preserve results across multiple training runs
 
 Usage:
-    # Train all folds
+    # Train all folds (creates timestamped run directory)
     python -m src.training.train_cnn_cls_cv --config config/config.yaml
+
+    # Train with custom run name
+    python -m src.training.train_cnn_cls_cv --config config/config.yaml --run-name experiment_v1
 
     # Train specific fold (for parallel/cluster execution)
     python -m src.training.train_cnn_cls_cv --config config/config.yaml --fold 0
@@ -21,7 +25,10 @@ Usage:
     python -m src.training.train_cnn_cls_cv --config config/config.yaml --cv-dir /path/to/cv_folds
 
     # Aggregate results only (after parallel fold training)
-    python -m src.training.train_cnn_cls_cv --config config/config.yaml --aggregate-only
+    python -m src.training.train_cnn_cls_cv --config config/config.yaml --run-name run_20260131_143052 --aggregate-only
+
+    # List previous training runs
+    python -m src.training.train_cnn_cls_cv --config config/config.yaml --list-runs
 """
 
 import os
@@ -116,7 +123,21 @@ def create_model(config, train_ds):
     # Get CNN config
     cnn_config = config.ml.get('cnn', {})
     width_multiplier = cnn_config.get('width_multiplier', 1)
-    kernel_scale = cnn_config.get('kernel_scale', 1)
+
+    # Auto-compute kernel_scale from decimation factor if not explicitly set
+    # Formula: kernel_scale = 10 / decimation_factor (to maintain ~10% receptive field)
+    kernel_scale = cnn_config.get('kernel_scale', None)
+    if kernel_scale is None:
+        decimation_factor = config.preprocess.signal.decimation.get('factor', 10)
+        valid_decimation_factors = {1, 2, 5, 10}
+        if decimation_factor not in valid_decimation_factors:
+            raise ValueError(
+                f"Invalid decimation factor: {decimation_factor}. "
+                f"Must be one of {sorted(valid_decimation_factors)} for kernel_scale auto-computation. "
+                f"Alternatively, set ml.cnn.kernel_scale explicitly in config."
+            )
+        kernel_scale = 10 // decimation_factor
+        logger.info(f"Auto-computed kernel_scale={kernel_scale} from decimation_factor={decimation_factor}")
 
     # Get dropout settings from training.regularization.dropout
     training_config = config.ml.get('training', {})
@@ -165,12 +186,22 @@ def create_model(config, train_ds):
     return model
 
 
-def train_single_fold(config, fold_dir, fold_idx, device, args):
-    """Train a single fold and return results."""
+def train_single_fold(config, fold_dir, fold_idx, run_dir, device, args):
+    """Train a single fold and return results.
+
+    Args:
+        config: Configuration object
+        fold_dir: Directory containing fold data (train_ds.pkl, etc.)
+        fold_idx: Fold index
+        run_dir: Timestamped run directory for outputs
+        device: Torch device
+        args: Command line arguments
+    """
     logger.info(f"\n{'='*60}")
     logger.info(f"TRAINING FOLD {fold_idx}")
     logger.info(f"{'='*60}")
-    logger.info(f"Fold directory: {fold_dir}")
+    logger.info(f"Fold data directory: {fold_dir}")
+    logger.info(f"Run output directory: {run_dir}")
 
     # Load fold info
     fold_info = load_fold_info(fold_dir)
@@ -210,8 +241,9 @@ def train_single_fold(config, fold_dir, fold_idx, device, args):
     model.print_architecture()
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Output directory for this fold
-    fold_output_dir = os.path.join(fold_dir, 'training_output')
+    # Output directory for this fold (inside timestamped run directory)
+    fold_output_dir = os.path.join(run_dir, f'fold_{fold_idx}')
+    os.makedirs(fold_output_dir, exist_ok=True)
 
     # Create trainer
     trainer = DirectClassifierTrainer(
@@ -284,11 +316,17 @@ def train_single_fold(config, fold_dir, fold_idx, device, args):
     return fold_results
 
 
-def aggregate_cv_results(cv_dir, fold_results):
-    """Aggregate results across all folds."""
+def aggregate_cv_results(run_dir, fold_results):
+    """Aggregate results across all folds.
+
+    Args:
+        run_dir: Timestamped run directory where results will be saved
+        fold_results: List of fold result dictionaries
+    """
     logger.info(f"\n{'='*60}")
     logger.info("CROSS-VALIDATION RESULTS SUMMARY")
     logger.info(f"{'='*60}")
+    logger.info(f"Run directory: {run_dir}")
 
     n_folds = len(fold_results)
 
@@ -307,7 +345,7 @@ def aggregate_cv_results(cv_dir, fold_results):
     # Build summary
     summary = {
         'n_folds': n_folds,
-        'cv_dir': cv_dir,
+        'run_dir': run_dir,
         'aggregated_at': datetime.now().isoformat(),
         'validation_accuracy': {
             'mean': float(np.mean(val_accs)),
@@ -352,19 +390,25 @@ def aggregate_cv_results(cv_dir, fold_results):
         logger.info(f"  {name}: {data['mean']:.2%} ± {data['std']:.2%}")
 
     # Save summary
-    summary_path = os.path.join(cv_dir, 'cv_results.json')
+    summary_path = os.path.join(run_dir, 'cv_results.json')
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)
     logger.info(f"\nResults saved to: {summary_path}")
 
     # Create summary plot
-    create_cv_summary_plot(cv_dir, summary, fold_results)
+    create_cv_summary_plot(run_dir, summary, fold_results)
 
     return summary
 
 
-def create_cv_summary_plot(cv_dir, summary, fold_results):
-    """Create visualization of CV results."""
+def create_cv_summary_plot(run_dir, summary, fold_results):
+    """Create visualization of CV results.
+
+    Args:
+        run_dir: Timestamped run directory where plot will be saved
+        summary: Aggregated summary statistics
+        fold_results: List of fold result dictionaries
+    """
     n_folds = summary['n_folds']
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -441,19 +485,23 @@ Per-Class (Test):
     plt.tight_layout()
 
     # Save plot
-    plot_path = os.path.join(cv_dir, 'cv_summary.png')
+    plot_path = os.path.join(run_dir, 'cv_summary.png')
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
     logger.info(f"Summary plot saved to: {plot_path}")
 
 
-def collect_existing_fold_results(cv_dir, fold_dirs):
-    """Collect results from already-trained folds."""
+def collect_existing_fold_results(run_dir, n_folds):
+    """Collect results from already-trained folds in a run directory.
+
+    Args:
+        run_dir: Timestamped run directory containing fold_0/, fold_1/, etc.
+        n_folds: Number of folds to look for
+    """
     fold_results = []
 
-    for fold_dir in fold_dirs:
-        fold_idx = int(os.path.basename(fold_dir).split('_')[1])
-        results_path = os.path.join(fold_dir, 'training_output', 'fold_results.json')
+    for fold_idx in range(n_folds):
+        results_path = os.path.join(run_dir, f'fold_{fold_idx}', 'fold_results.json')
 
         if os.path.exists(results_path):
             with open(results_path, 'r') as f:
@@ -470,20 +518,61 @@ def collect_existing_fold_results(cv_dir, fold_dirs):
     return fold_results
 
 
+def list_training_runs(cv_dir):
+    """List all training runs in the CV directory."""
+    run_dirs = sorted(glob.glob(os.path.join(cv_dir, 'run_*')))
+
+    if not run_dirs:
+        logger.info(f"No training runs found in {cv_dir}")
+        return []
+
+    logger.info(f"\nTraining runs in {cv_dir}:")
+    logger.info("-" * 60)
+
+    runs = []
+    for run_dir in run_dirs:
+        run_name = os.path.basename(run_dir)
+
+        # Check for cv_results.json to get summary
+        results_path = os.path.join(run_dir, 'cv_results.json')
+        if os.path.exists(results_path):
+            with open(results_path, 'r') as f:
+                results = json.load(f)
+            val_acc = results.get('validation_accuracy', {}).get('mean', 0)
+            test_acc = results.get('test_accuracy', {}).get('mean', 0)
+            n_folds = results.get('n_folds', '?')
+            status = f"Complete ({n_folds} folds) - Val: {val_acc:.1%}, Test: {test_acc:.1%}"
+        else:
+            # Count completed folds
+            completed_folds = len(glob.glob(os.path.join(run_dir, 'fold_*/fold_results.json')))
+            status = f"In progress ({completed_folds} folds completed)"
+
+        logger.info(f"  {run_name}: {status}")
+        runs.append({'name': run_name, 'path': run_dir, 'status': status})
+
+    return runs
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Train CNN Classifier with K-Fold Cross-Validation',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Train all folds
+  # Train all folds (creates timestamped run directory)
   python -m src.training.train_cnn_cls_cv --config config/config.yaml
+
+  # Train with custom run name
+  python -m src.training.train_cnn_cls_cv --config config/config.yaml --run-name experiment_v1
 
   # Train specific fold (for parallel execution)
   python -m src.training.train_cnn_cls_cv --config config/config.yaml --fold 0
 
-  # Aggregate results after parallel training
-  python -m src.training.train_cnn_cls_cv --config config/config.yaml --aggregate-only
+  # Aggregate results after parallel training (specify run name)
+  python -m src.training.train_cnn_cls_cv --config config/config.yaml --run-name run_20260131_143052 --aggregate-only
+
+  # List previous training runs
+  python -m src.training.train_cnn_cls_cv --config config/config.yaml --list-runs
 
   # Custom CV directory
   python -m src.training.train_cnn_cls_cv --config config/config.yaml --cv-dir /path/to/cv_folds
@@ -493,10 +582,14 @@ Examples:
                         help='Path to config YAML')
     parser.add_argument('--cv-dir', type=str, default=None,
                         help='Path to CV folds directory (overrides config)')
+    parser.add_argument('--run-name', type=str, default=None,
+                        help='Name for this training run (default: run_YYYYMMDD_HHMMSS)')
     parser.add_argument('--fold', type=int, default=None,
                         help='Train only this specific fold (for parallel execution)')
     parser.add_argument('--aggregate-only', action='store_true',
                         help='Only aggregate results from existing fold training')
+    parser.add_argument('--list-runs', action='store_true',
+                        help='List all previous training runs and exit')
     parser.add_argument('--no-wandb', action='store_true',
                         help='Disable WandB logging')
     parser.add_argument('--restart', '-r', action='store_true',
@@ -528,6 +621,11 @@ Examples:
         logger.error("Run 'python -m src.data.precompute_kfolds --config config/config.yaml' first")
         return 1
 
+    # Mode: list runs
+    if args.list_runs:
+        list_training_runs(cv_dir)
+        return 0
+
     # Find fold directories
     fold_dirs = sorted(glob.glob(os.path.join(cv_dir, 'fold_*')))
     if not fold_dirs:
@@ -544,16 +642,50 @@ Examples:
             cv_run_config = json.load(f)
         logger.info(f"CV Strategy: {cv_run_config.get('strategy', 'unknown')}")
 
+    # Determine run directory
+    if args.run_name:
+        # Use provided run name (with or without run_ prefix)
+        run_name = args.run_name if args.run_name.startswith('run_') else f'run_{args.run_name}'
+    else:
+        # Generate timestamped run name
+        run_name = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    run_dir = os.path.join(cv_dir, run_name)
+
     # Mode: aggregate only
     if args.aggregate_only:
-        logger.info("Aggregating results from existing fold training...")
-        fold_results = collect_existing_fold_results(cv_dir, fold_dirs)
+        if not os.path.exists(run_dir):
+            logger.error(f"Run directory not found: {run_dir}")
+            logger.error("Specify an existing run with --run-name or train first")
+            # List available runs
+            list_training_runs(cv_dir)
+            return 1
+
+        logger.info(f"Aggregating results from: {run_dir}")
+        fold_results = collect_existing_fold_results(run_dir, n_folds)
         if fold_results:
-            aggregate_cv_results(cv_dir, fold_results)
+            aggregate_cv_results(run_dir, fold_results)
         else:
             logger.error("No fold results found to aggregate")
             return 1
         return 0
+
+    # Create run directory
+    os.makedirs(run_dir, exist_ok=True)
+    logger.info(f"Run directory: {run_dir}")
+
+    # Save run config for reference
+    run_config_path = os.path.join(run_dir, 'run_config.json')
+    with open(run_config_path, 'w') as f:
+        json.dump({
+            'run_name': run_name,
+            'started_at': datetime.now().isoformat(),
+            'config_file': os.path.abspath(args.config),
+            'n_folds': n_folds,
+            'fold': args.fold,
+            'restart': args.restart,
+            'no_wandb': args.no_wandb,
+        }, f, indent=2)
 
     # Mode: single fold
     if args.fold is not None:
@@ -562,11 +694,12 @@ Examples:
             return 1
 
         fold_dir = fold_dirs[args.fold]
-        fold_results = [train_single_fold(config, fold_dir, args.fold, device, args)]
+        fold_results = [train_single_fold(config, fold_dir, args.fold, run_dir, device, args)]
 
         logger.info(f"\nFold {args.fold} training complete.")
-        logger.info(f"To aggregate all results after training all folds, run:")
-        logger.info(f"  python -m src.training.train_cnn_cls_cv -c {args.config} --aggregate-only")
+        logger.info(f"Results saved to: {run_dir}/fold_{args.fold}/")
+        logger.info(f"\nTo aggregate all results after training all folds, run:")
+        logger.info(f"  python -m src.training.train_cnn_cls_cv -c {args.config} --run-name {run_name} --aggregate-only")
         return 0
 
     # Mode: train all folds sequentially
@@ -577,7 +710,7 @@ Examples:
     all_fold_results = []
     for fold_idx, fold_dir in enumerate(fold_dirs):
         try:
-            result = train_single_fold(config, fold_dir, fold_idx, device, args)
+            result = train_single_fold(config, fold_dir, fold_idx, run_dir, device, args)
             all_fold_results.append(result)
         except Exception as e:
             logger.error(f"Failed to train fold {fold_idx}: {e}")
@@ -587,13 +720,13 @@ Examples:
 
     # Aggregate results
     if all_fold_results:
-        aggregate_cv_results(cv_dir, all_fold_results)
+        aggregate_cv_results(run_dir, all_fold_results)
     else:
         logger.error("No folds completed successfully")
         return 1
 
     logger.info(f"\nCross-validation training complete!")
-    logger.info(f"Results saved to: {cv_dir}")
+    logger.info(f"Results saved to: {run_dir}")
 
     return 0
 

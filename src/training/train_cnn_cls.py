@@ -48,6 +48,7 @@ sys.path.insert(0, project_root)
 from config.configurator import load_config, setup_environment
 from src.models.direct_cnn_classifier import DirectCNNClassifier
 from src.data.datasets import create_filtered_split_datasets
+from src.training.utils.losses import compute_train_loss, compute_eval_loss
 import utils.logging_config as logconf
 
 logger = logconf.get_logger("TRAIN_DIRECT_CLS")
@@ -67,42 +68,6 @@ with open(_label_config_path) as _f:
 _classes_config = _label_config.get('classes', {})
 CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(_classes_config.get('num_classes', 3))]
 CLASS_COLORS = _classes_config.get('colors', {})
-
-
-def focal_loss(logits, targets, weight=None, gamma=2.0, reduction='mean'):
-    """
-    Focal Loss for addressing class imbalance.
-
-    Down-weights easy examples (high confidence correct predictions)
-    and focuses on hard examples (misclassifications, minority classes).
-
-    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
-
-    Args:
-        logits: Raw model outputs (B, num_classes)
-        targets: Ground truth labels (B,)
-        weight: Per-class weights (num_classes,)
-        gamma: Focusing parameter. Higher = more focus on hard examples.
-               gamma=0 is equivalent to cross-entropy.
-               gamma=2 is the default from the paper.
-        reduction: 'mean', 'sum', or 'none'
-    """
-    ce_loss = F.cross_entropy(logits, targets, weight=weight, reduction='none')
-
-    # Get probability of correct class
-    probs = F.softmax(logits, dim=-1)
-    p_t = probs.gather(1, targets.unsqueeze(1)).squeeze(1)
-
-    # Focal weight: (1 - p_t)^gamma
-    focal_weight = (1 - p_t) ** gamma
-
-    focal_loss = focal_weight * ce_loss
-
-    if reduction == 'mean':
-        return focal_loss.mean()
-    elif reduction == 'sum':
-        return focal_loss.sum()
-    return focal_loss
 
 
 class DirectClassifierTrainer:
@@ -139,26 +104,23 @@ class DirectClassifierTrainer:
         # Scheduler config
         self.scheduler_type = train_cfg.lr_scheduler.get('type', 'cosine')
 
-        # Class imbalance handling (class weights and/or focal loss)
+        # Class imbalance handling via class weights
         self.class_weights = None
         self.use_weighted_loss = False
-        self.use_focal_loss = True  # Default
-        self.focal_gamma = 2.0
+        self.weight_method = "inverse_frequency"
+        self.weight_power = 1.0
+        self.custom_weights = None
 
         imbalance_cfg = train_cfg.get('imbalance', None) if hasattr(train_cfg, 'get') else getattr(train_cfg, 'imbalance', None)
         if imbalance_cfg:
-            # Class weights config
             weights_cfg = imbalance_cfg.get('class_weights', None) if hasattr(imbalance_cfg, 'get') else getattr(imbalance_cfg, 'class_weights', None)
             if weights_cfg:
                 self.use_weighted_loss = weights_cfg.get('enabled', False) if hasattr(weights_cfg, 'get') else getattr(weights_cfg, 'enabled', False)
+                self.weight_method = weights_cfg.get('method', 'inverse_frequency') if hasattr(weights_cfg, 'get') else getattr(weights_cfg, 'method', 'inverse_frequency')
+                self.weight_power = weights_cfg.get('power', 1.0) if hasattr(weights_cfg, 'get') else getattr(weights_cfg, 'power', 1.0)
+                self.custom_weights = weights_cfg.get('custom_weights', None) if hasattr(weights_cfg, 'get') else getattr(weights_cfg, 'custom_weights', None)
 
-            # Focal loss config
-            focal_cfg = imbalance_cfg.get('focal_loss', None) if hasattr(imbalance_cfg, 'get') else getattr(imbalance_cfg, 'focal_loss', None)
-            if focal_cfg:
-                self.use_focal_loss = focal_cfg.get('enabled', True) if hasattr(focal_cfg, 'get') else getattr(focal_cfg, 'enabled', True)
-                self.focal_gamma = focal_cfg.get('gamma', 2.0) if hasattr(focal_cfg, 'get') else getattr(focal_cfg, 'gamma', 2.0)
-
-        logger.info(f"Imbalance config: class_weights={self.use_weighted_loss}, focal_loss={self.use_focal_loss}")
+        logger.info(f"Imbalance config: class_weights={self.use_weighted_loss} (method={self.weight_method}, power={self.weight_power})")
 
         # Early stopping config (use OmegaConf-compatible access)
         es_cfg = train_cfg.get('early_stopping', None) if hasattr(train_cfg, 'get') else getattr(train_cfg, 'early_stopping', None)
@@ -270,26 +232,53 @@ class DirectClassifierTrainer:
             for cls in range(self.model.num_classes):
                 class_counts[cls] += (hard_labels == cls).sum().item()
 
-        # Inverse frequency weighting (more aggressive for extreme imbalance)
         total = class_counts.sum()
-        weights = total / (len(class_counts) * class_counts + 1e-6)
-
-        # For extreme imbalance, apply power scaling (but not too aggressive to avoid oscillation)
-        # Power=1.0 is standard inverse frequency, power=1.5 was too aggressive
+        n_classes = len(class_counts)
         max_ratio = class_counts.max() / (class_counts.min() + 1e-6)
-        weight_power = 1.0  # Standard inverse frequency (was 1.5, too aggressive)
-        if max_ratio > 10:
-            logger.info(f"Extreme imbalance detected (ratio={max_ratio:.1f}), using weight power={weight_power}")
-            weights = weights ** weight_power
 
-        weights = weights / weights.sum() * len(class_counts)  # Normalize
+        # Compute base weights based on method
+        if self.weight_method == "custom" and self.custom_weights is not None:
+            # User-defined weights
+            weights = torch.tensor(self.custom_weights, dtype=torch.float32)
+            if len(weights) != n_classes:
+                raise ValueError(f"custom_weights length ({len(weights)}) != num_classes ({n_classes})")
+            logger.info(f"Using custom weights: {self.custom_weights}")
+
+        elif self.weight_method == "effective_samples":
+            # Class-Balanced Loss (Cui et al., 2019): (1 - β^n) / (1 - β)
+            # β close to 1 means more samples needed to represent the class
+            beta = 0.999
+            effective_num = 1.0 - torch.pow(beta, class_counts)
+            weights = (1.0 - beta) / (effective_num + 1e-6)
+            logger.info(f"Using effective_samples method (β={beta})")
+
+        elif self.weight_method == "sqrt_inverse":
+            # Square root inverse frequency - less aggressive
+            weights = torch.sqrt(total / (class_counts + 1e-6))
+            logger.info("Using sqrt_inverse method (gentler than inverse_frequency)")
+
+        else:  # inverse_frequency (default)
+            # Standard inverse frequency: weight = total / (n_classes * count)
+            weights = total / (n_classes * class_counts + 1e-6)
+            logger.info("Using inverse_frequency method")
+
+        # Apply power scaling
+        # power < 1: gentler weighting (e.g., 0.5 = sqrt)
+        # power = 1: standard (linear)
+        # power > 1: more aggressive (amplifies differences)
+        if self.weight_power != 1.0:
+            logger.info(f"Applying power scaling: power={self.weight_power}")
+            weights = weights ** self.weight_power
+
+        # Normalize so weights sum to n_classes (average weight = 1)
+        weights = weights / weights.sum() * n_classes
 
         self.class_weights = weights.to(self.device)
 
-        # Log class distribution
-        logger.info(f"Class distribution: {class_counts.long().tolist()}")
+        # Log class distribution and final weights
+        logger.info(f"Class distribution: {class_counts.long().tolist()} (max/min ratio: {max_ratio:.1f})")
         logger.info(f"Class weights: {[f'{w:.3f}' for w in weights.tolist()]}")
-        logger.info(f"Using focal loss: {self.use_focal_loss} (gamma={self.focal_gamma})")
+        logger.info(f"Weight method: {self.weight_method}, power: {self.weight_power}")
 
         # Log to WandB
         if self.use_wandb and self._wandb_run:
@@ -339,17 +328,8 @@ class DirectClassifierTrainer:
             self.optimizer.zero_grad()
             logits = self.model(data)
 
-            # Loss computation - use soft labels when available
-            if soft_labels is not None:
-                # Soft label cross-entropy: -sum(soft_labels * log_softmax(logits))
-                log_probs = F.log_softmax(logits, dim=-1)
-                loss = -(soft_labels * log_probs).sum(dim=-1).mean()
-            elif self.use_focal_loss:
-                loss = focal_loss(logits, hard_labels, weight=self.class_weights, gamma=self.focal_gamma)
-            elif self.class_weights is not None:
-                loss = F.cross_entropy(logits, hard_labels, weight=self.class_weights)
-            else:
-                loss = F.cross_entropy(logits, hard_labels)
+            # Training loss: weighted for class imbalance handling
+            loss = compute_train_loss(logits, soft_labels, hard_labels, self.class_weights)
 
             # Backward pass
             loss.backward()
@@ -429,16 +409,8 @@ class DirectClassifierTrainer:
             logits = self.model(data)
             probs = F.softmax(logits, dim=-1)
 
-            # Loss - MUST match training loss for valid comparison
-            if soft_labels is not None:
-                log_probs = F.log_softmax(logits, dim=-1)
-                loss = -(soft_labels * log_probs).sum(dim=-1).mean()
-            elif self.use_focal_loss:
-                loss = focal_loss(logits, hard_labels, weight=self.class_weights, gamma=self.focal_gamma)
-            elif self.class_weights is not None:
-                loss = F.cross_entropy(logits, hard_labels, weight=self.class_weights)
-            else:
-                loss = F.cross_entropy(logits, hard_labels)
+            # Evaluation loss: unweighted for fair performance measurement
+            loss = compute_eval_loss(logits, soft_labels, hard_labels)
 
             # Metrics
             preds = logits.argmax(dim=-1)
@@ -705,8 +677,8 @@ class DirectClassifierTrainer:
             'scheduler': self.scheduler_type,
             'grad_clip': self.grad_clip,
             'use_weighted_loss': self.use_weighted_loss,
-            'use_focal_loss': self.use_focal_loss,
-            'focal_gamma': self.focal_gamma,
+            'weight_method': self.weight_method,
+            'weight_power': self.weight_power,
             'early_stopping_patience': self.early_stopping_patience
         }
 
@@ -1048,7 +1020,21 @@ def main():
     # Get CNN config
     cnn_config = config.ml.get('cnn', {})
     width_multiplier = cnn_config.get('width_multiplier', 1)
-    kernel_scale = cnn_config.get('kernel_scale', 1)
+
+    # Auto-compute kernel_scale from decimation factor if not explicitly set
+    # Formula: kernel_scale = 10 / decimation_factor (to maintain ~10% receptive field)
+    kernel_scale = cnn_config.get('kernel_scale', None)
+    if kernel_scale is None:
+        decimation_factor = config.preprocess.signal.decimation.get('factor', 10)
+        valid_decimation_factors = {1, 2, 5, 10}
+        if decimation_factor not in valid_decimation_factors:
+            raise ValueError(
+                f"Invalid decimation factor: {decimation_factor}. "
+                f"Must be one of {sorted(valid_decimation_factors)} for kernel_scale auto-computation. "
+                f"Alternatively, set ml.cnn.kernel_scale explicitly in config."
+            )
+        kernel_scale = 10 // decimation_factor
+        logger.info(f"Auto-computed kernel_scale={kernel_scale} from decimation_factor={decimation_factor}")
 
     # Get dropout from training.regularization.dropout
     training_config = config.ml.get('training', {})
