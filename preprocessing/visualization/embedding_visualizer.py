@@ -16,14 +16,29 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import yaml
 
 # Add project root to path
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# Load label config for dynamic class handling
+_label_config_path = os.path.join(project_root, "preprocessing/label_logic/label_config.yaml")
+with open(_label_config_path) as _f:
+    _label_config = yaml.safe_load(_f)
 
-CLASS_NAMES = ['noise', 'upward', 'downward']
-CLASS_COLORS = ['#808080', '#2ecc71', '#e74c3c']  # gray, green, red
+_classes_config = _label_config.get('classes', {})
+_INCLUDE_NOISE = _classes_config.get('include_noise', True)
+_NUM_CLASSES = 5 if _INCLUDE_NOISE else 4
+_ALL_NAMES = _classes_config.get('names', {0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'})
+
+# Build active class names and colors based on include_noise
+if _INCLUDE_NOISE:
+    CLASS_NAMES = [_ALL_NAMES.get(i, f'Class {i}') for i in range(5)]
+    CLASS_COLORS = ['#808080', '#2ecc71', '#e74c3c', '#3498db', '#f39c12']  # gray, green, red, blue, orange
+else:
+    CLASS_NAMES = [_ALL_NAMES.get(i, f'Class {i}') for i in range(1, 5)]
+    CLASS_COLORS = ['#2ecc71', '#e74c3c', '#3498db', '#f39c12']  # green, red, blue, orange
 
 
 def load_embeddings(embeddings_path):
@@ -150,10 +165,12 @@ def plot_embedding_scatter(X_2d, y, title, ax=None, show_legend=True):
 
     for cls in np.unique(y):
         mask = y == cls
+        cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f'Class {cls}'
+        cls_color = CLASS_COLORS[cls] if cls < len(CLASS_COLORS) else '#999999'
         ax.scatter(
             X_2d[mask, 0], X_2d[mask, 1],
-            c=CLASS_COLORS[cls],
-            label=f'{CLASS_NAMES[cls]} (n={mask.sum()})',
+            c=cls_color,
+            label=f'{cls_name} (n={mask.sum()})',
             alpha=0.6,
             s=20
         )
@@ -177,12 +194,14 @@ def plot_class_distributions(X, y, ax=None):
 
     for cls in np.unique(y):
         mask = y == cls
+        cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f'Class {cls}'
+        cls_color = CLASS_COLORS[cls] if cls < len(CLASS_COLORS) else '#999999'
         ax.hist(
             norms[mask],
             bins=50,
             alpha=0.5,
-            label=f'{CLASS_NAMES[cls]}',
-            color=CLASS_COLORS[cls]
+            label=cls_name,
+            color=cls_color
         )
 
     ax.set_xlabel('Embedding L2 Norm')
@@ -206,12 +225,14 @@ def plot_dimension_distributions(X, y, top_n=6):
         ax = axes[idx]
         for cls in np.unique(y):
             mask = y == cls
+            cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f'Class {cls}'
+            cls_color = CLASS_COLORS[cls] if cls < len(CLASS_COLORS) else '#999999'
             ax.hist(
                 X[mask, dim],
                 bins=50,
                 alpha=0.5,
-                label=CLASS_NAMES[cls],
-                color=CLASS_COLORS[cls]
+                label=cls_name,
+                color=cls_color
             )
         ax.set_title(f'Dimension {dim} (var={variances[dim]:.4f})')
         ax.legend()
@@ -234,7 +255,12 @@ def create_full_visualization(embeddings_dict, method='tsne', output_dir=None):
     print("=" * 60)
     print(f"Total samples: {len(all_X)}")
     print(f"Embedding dimension: {all_X.shape[1]}")
-    print(f"Class distribution: {dict(zip(CLASS_NAMES, np.bincount(all_y)))}")
+    # Build class distribution dict dynamically
+    class_dist = {}
+    for cls in np.unique(all_y):
+        cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f'Class {cls}'
+        class_dist[cls_name] = np.sum(all_y == cls)
+    print(f"Class distribution: {class_dist}")
 
     # Compute separability score
     fisher_score = compute_separability_score(all_X, all_y)
@@ -251,10 +277,11 @@ def create_full_visualization(embeddings_dict, method='tsne', output_dir=None):
     # Compute class statistics
     print("\nPer-class embedding statistics:")
     stats = compute_class_statistics(all_X, all_y)
-    for cls in range(3):
+    for cls in np.unique(all_y):
         if cls in stats:
             s = stats[cls]
-            print(f"  {CLASS_NAMES[cls]}: n={s['count']}, "
+            cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f'Class {cls}'
+            print(f"  {cls_name}: n={s['count']}, "
                   f"norm={s['norm_mean']:.3f}+/-{s['norm_std']:.3f}, "
                   f"spread={s['std']:.4f}")
 
@@ -262,7 +289,10 @@ def create_full_visualization(embeddings_dict, method='tsne', output_dir=None):
     for key, val in stats.items():
         if isinstance(key, str) and key.startswith('dist_'):
             cls_i, cls_j = key.replace('dist_', '').split('_')
-            print(f"  {CLASS_NAMES[int(cls_i)]} <-> {CLASS_NAMES[int(cls_j)]}: {val:.4f}")
+            cls_i, cls_j = int(cls_i), int(cls_j)
+            name_i = CLASS_NAMES[cls_i] if cls_i < len(CLASS_NAMES) else f'Class {cls_i}'
+            name_j = CLASS_NAMES[cls_j] if cls_j < len(CLASS_NAMES) else f'Class {cls_j}'
+            print(f"  {name_i} <-> {name_j}: {val:.4f}")
 
     # Dimensionality reduction
     print(f"\nReducing dimensions with {method.upper()}...")
@@ -306,15 +336,17 @@ def create_full_visualization(embeddings_dict, method='tsne', output_dir=None):
     for cls in np.unique(all_y):
         mask = all_y == cls
         centroid = X_2d[mask].mean(axis=0)
+        cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f'Class {cls}'
+        cls_color = CLASS_COLORS[cls] if cls < len(CLASS_COLORS) else '#999999'
         ax4.scatter(
             X_2d[mask, 0], X_2d[mask, 1],
-            c=CLASS_COLORS[cls], alpha=0.3, s=10
+            c=cls_color, alpha=0.3, s=10
         )
         ax4.scatter(
             centroid[0], centroid[1],
-            c=CLASS_COLORS[cls], s=200, marker='X',
+            c=cls_color, s=200, marker='X',
             edgecolors='black', linewidths=2,
-            label=f'{CLASS_NAMES[cls]} centroid'
+            label=f'{cls_name} centroid'
         )
     ax4.set_title('Class Centroids')
     ax4.legend()

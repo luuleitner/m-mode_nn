@@ -35,14 +35,25 @@ sys.path.insert(0, project_root)
 from preprocessing.processor import DataProcessor
 from preprocessing.signal_utils import apply_joystick_filters
 
-# Load label config for joystick filters
+# Load label config for joystick filters and class definitions
 label_config_path = os.path.join(project_root, "preprocessing", "label_logic", "label_config.yaml")
 with open(label_config_path, 'r') as f:
     label_config = yaml.safe_load(f)
 filters_config = label_config.get('filters', {})
 
+# Get class configuration
+_classes_config = label_config.get('classes', {})
+_INCLUDE_NOISE = _classes_config.get('include_noise', True)
+_NUM_CLASSES = 5 if _INCLUDE_NOISE else 4
 
-# 5-class label colors (fill, border) - low alpha for transparency
+# Get class names from config
+_config_names = _classes_config.get('names', {})
+LABEL_NAMES = {int(k): v for k, v in _config_names.items()} if _config_names else {
+    0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'
+}
+
+# Label colors (fill, border) - low alpha for transparency
+# These are always defined for all 5 classes (visualization shows raw labels)
 LABEL_COLORS = {
     0: ('rgba(255, 0, 255, 0.15)', 'rgba(255, 0, 255, 0.5)'),     # Noise - magenta
     1: ('rgba(0, 255, 0, 0.15)', 'rgba(0, 255, 0, 0.5)'),         # Up - green
@@ -51,7 +62,8 @@ LABEL_COLORS = {
     4: ('rgba(255, 165, 0, 0.15)', 'rgba(255, 165, 0, 0.5)')      # Right - orange
 }
 
-LABEL_NAMES = {0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'}
+# Active labels based on include_noise setting
+ACTIVE_LABELS = list(range(5)) if _INCLUDE_NOISE else list(range(1, 5))
 
 
 def select_random_experiment(processor, seed=None):
@@ -67,9 +79,11 @@ def select_random_experiment(processor, seed=None):
 
 def find_label_regions(labels):
     """Find start and end indices for each labeled region."""
-    regions = {i: [] for i in range(5)}  # 5 classes: 0-4
+    # Find all unique labels in the data
+    unique_labels = np.unique(labels)
+    regions = {i: [] for i in unique_labels}
 
-    for label_val in range(5):
+    for label_val in unique_labels:
         mask = labels == label_val
         diff = np.diff(np.concatenate([[0], mask.astype(int), [0]]))
         starts = np.where(diff == 1)[0]
@@ -82,14 +96,17 @@ def find_label_regions(labels):
 
 
 def add_label_regions(fig, labels, row, col, y_max, show_noise=True):
-    """Add colored rectangles for 5-class label regions."""
+    """Add colored rectangles for label regions."""
     regions = find_label_regions(labels)
 
-    for label_val in range(5):
+    for label_val in regions.keys():
         if label_val == 0 and not show_noise:
             continue  # Skip noise regions unless explicitly requested
 
-        fill_color, border_color = LABEL_COLORS[label_val]
+        # Get colors with fallback for unknown labels
+        fill_color, border_color = LABEL_COLORS.get(
+            label_val, ('rgba(128, 128, 128, 0.15)', 'rgba(128, 128, 128, 0.5)')
+        )
 
         for s, e in regions[label_val]:
             fig.add_shape(
@@ -140,11 +157,15 @@ def create_visualization(exp_path, data):
         deriv_x_scaled = deriv_x
         deriv_y_scaled = deriv_y
 
+    # Check if data is differentiated for title labeling
+    is_diff = config_info.get('differentiation') is not None
+    us_label = 'dUS/dt' if is_diff else 'US'
+
     # Build subplot titles
     subplot_titles = []
     for ch in range(n_channels):
-        subplot_titles.append(f'US Ch{ch} + Joystick X + Labels [{depth}×{n_pulses}]')
-        subplot_titles.append(f'US Ch{ch} + Joystick Y + Labels [{depth}×{n_pulses}]')
+        subplot_titles.append(f'{us_label} Ch{ch} + Joystick X + Labels [{depth}×{n_pulses}]')
+        subplot_titles.append(f'{us_label} Ch{ch} + Joystick Y + Labels [{depth}×{n_pulses}]')
 
     # Create figure: 6 rows (2 per channel), 1 column, with secondary y-axis
     n_rows = n_channels * 2
@@ -160,24 +181,38 @@ def create_visualization(exp_path, data):
     session_name = os.path.basename(os.path.dirname(exp_path))
     exp_num = os.path.basename(exp_path)
 
+    # Determine colorscale based on whether differentiation was applied
+    if is_diff:
+        # Diverging colorscale for differentiated data (blue=negative, white=zero, red=positive)
+        us_colorscale = 'RdBu_r'
+        # Compute symmetric color range centered at zero
+        diff_max = np.abs(processed_us).max()
+        us_zmin, us_zmax, us_zmid = -diff_max, diff_max, 0
+        colorbar_title = 'dUS/dt'
+    else:
+        # Grayscale for non-differentiated (RF/envelope) data
+        us_colorscale = 'gray'
+        us_zmin, us_zmax, us_zmid = None, None, None
+        colorbar_title = 'Amp'
+
     for ch in range(n_channels):
         row_x = ch * 2 + 1  # X-axis row
         row_y = ch * 2 + 2  # Y-axis row
 
         # === X-AXIS ROW ===
         # US heatmap
-        fig.add_trace(
-            go.Heatmap(
-                z=processed_us[ch],
-                colorscale='gray',
-                showscale=False,
-                name=f'US Ch{ch}'
-            ),
-            row=row_x, col=1
+        heatmap_kwargs = dict(
+            z=processed_us[ch],
+            colorscale=us_colorscale,
+            showscale=False,
+            name=f'US Ch{ch}'
         )
+        if is_diff:
+            heatmap_kwargs.update(zmin=us_zmin, zmax=us_zmax, zmid=us_zmid)
+        fig.add_trace(go.Heatmap(**heatmap_kwargs), row=row_x, col=1)
 
-        # Add 5-class label regions
-        add_label_regions(fig, labels, row_x, 1, depth)
+        # Add label regions (respects include_noise setting)
+        add_label_regions(fig, labels, row_x, 1, depth, show_noise=_INCLUDE_NOISE)
 
         # Joystick X position (secondary y-axis)
         fig.add_trace(
@@ -214,19 +249,19 @@ def create_visualization(exp_path, data):
 
         # === Y-AXIS ROW ===
         # US heatmap
-        fig.add_trace(
-            go.Heatmap(
-                z=processed_us[ch],
-                colorscale='gray',
-                showscale=(ch == n_channels - 1),
-                colorbar=dict(title='Amp', x=1.02) if ch == n_channels - 1 else None,
-                name=f'US Ch{ch} (Y)'
-            ),
-            row=row_y, col=1
+        heatmap_kwargs_y = dict(
+            z=processed_us[ch],
+            colorscale=us_colorscale,
+            showscale=(ch == n_channels - 1),
+            colorbar=dict(title=colorbar_title, x=1.02) if ch == n_channels - 1 else None,
+            name=f'US Ch{ch} (Y)'
         )
+        if is_diff:
+            heatmap_kwargs_y.update(zmin=us_zmin, zmax=us_zmax, zmid=us_zmid)
+        fig.add_trace(go.Heatmap(**heatmap_kwargs_y), row=row_y, col=1)
 
-        # Add 5-class label regions
-        add_label_regions(fig, labels, row_y, 1, depth)
+        # Add label regions (respects include_noise setting)
+        add_label_regions(fig, labels, row_y, 1, depth, show_noise=_INCLUDE_NOISE)
 
         # Joystick Y position (secondary y-axis)
         fig.add_trace(
@@ -289,9 +324,20 @@ def create_visualization(exp_path, data):
         margin=dict(t=160, b=50)
     )
 
-    # Label distribution
-    label_counts = {i: np.sum(labels == i) for i in range(5)}
-    label_dist = " | ".join([f"{LABEL_NAMES[i]}: {label_counts[i]}" for i in range(5)])
+    # Label distribution - use unique labels from data, filtered by include_noise
+    unique_labels = sorted(np.unique(labels))
+    if not _INCLUDE_NOISE:
+        unique_labels = [l for l in unique_labels if l != 0]  # Exclude noise from display
+    label_counts = {i: np.sum(labels == i) for i in unique_labels}
+    label_dist = " | ".join([f"{LABEL_NAMES.get(i, f'Class {i}')}: {label_counts[i]}" for i in unique_labels])
+
+    # Build legend dynamically
+    legend_parts = []
+    label_colors_html = {0: 'gray', 1: 'green', 2: 'red', 3: 'blue', 4: 'orange'}
+    for i in unique_labels:
+        color = label_colors_html.get(i, 'gray')
+        name = LABEL_NAMES.get(i, f'Class {i}')
+        legend_parts.append(f"<span style='color:{color}'>■{name}</span>")
 
     # Info annotation
     info_lines = [
@@ -299,7 +345,7 @@ def create_visualization(exp_path, data):
         f"<b>Processing:</b> {' → '.join(processing_parts)}",
         f"<b>Labels:</b> {config_info['label_method']} (pos={config_info.get('pp_pos_thresh', 'N/A')}%, deriv={config_info.get('pp_deriv_thresh', 'N/A')}%)",
         f"<b>Distribution:</b> {label_dist}",
-        f"<b>Legend:</b> <span style='color:gray'>■Noise</span> <span style='color:green'>■Up</span> <span style='color:red'>■Down</span> <span style='color:blue'>■Left</span> <span style='color:orange'>■Right</span>"
+        f"<b>Legend:</b> {' '.join(legend_parts)}"
     ]
     fig.add_annotation(
         text="<br>".join(info_lines),
@@ -354,12 +400,16 @@ def main():
     print(f"Joystick shape:     {data['joystick'].shape} [channels, pulses]")
     print(f"Labels shape:       {data['labels'].shape}")
 
-    # Label distribution
-    print(f"\n5-Class Label Distribution:")
-    for i in range(5):
+    # Label distribution (filtered by include_noise setting)
+    unique_labels = sorted(np.unique(data['labels']))
+    if not _INCLUDE_NOISE:
+        unique_labels = [l for l in unique_labels if l != 0]
+    print(f"\nLabel Distribution ({len(unique_labels)} active classes, include_noise={_INCLUDE_NOISE}):")
+    for i in unique_labels:
         count = np.sum(data['labels'] == i)
         pct = 100.0 * count / len(data['labels'])
-        print(f"  {LABEL_NAMES[i]:6s}: {count:5d} ({pct:5.1f}%)")
+        name = LABEL_NAMES.get(i, f'Class {i}')
+        print(f"  {name:6s}: {count:5d} ({pct:5.1f}%)")
 
     # Create and show visualization
     fig = create_visualization(exp_path, data)

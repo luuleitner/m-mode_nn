@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window15_Stride05_Labels_soft/run_20260201_015715"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window15_Stride05_Labels_soft/run_20260201_105509"
 
 
 # ========================================
@@ -155,7 +155,9 @@ ml:
     global_participant_filter: null         # e.g., [1, 2, 3] - keep only these
     global_session_filter: null             # e.g., [14, 15] - keep only these
     global_experiment_filter: null          # e.g., [0, 1, 2] - keep only these
-    global_label_filter: null               # e.g., [1, 2] - keep only movement
+    global_label_filter: null               # e.g., [1, 2, 3, 4] - keep only movement
+    # NOTE: global_label_filter is auto-set to [1,2,3,4] when include_noise=false
+    #       in preprocessing/label_logic/label_config.yaml
 
     # =========================================
     # STEP 2: TEST/VAL SELECTION STRATEGY
@@ -228,6 +230,8 @@ ml:
   # =====================================================================
   classifier:
     type: "XGBoost"
+    # NOTE: class_names should be loaded from preprocessing/label_logic/label_config.yaml
+    # This hardcoded list is deprecated and should be removed in favor of dynamic loading.
     class_names: ["noise", "up", "down", "left", "right"]
 
     # XGBoost hyperparameters
