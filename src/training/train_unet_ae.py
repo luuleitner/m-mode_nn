@@ -51,7 +51,15 @@ _label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label
 with open(_label_config_path) as _f:
     _label_config = yaml.safe_load(_f)
 _classes_config = _label_config.get('classes', {})
-CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(_classes_config.get('num_classes', 3))]
+_INCLUDE_NOISE = _classes_config.get('include_noise', True)
+_NUM_CLASSES = 5 if _INCLUDE_NOISE else 4
+
+# When noise excluded, labels are remapped 1,2,3,4 → 0,1,2,3 at training time
+# So CLASS_NAMES maps remapped indices to original names
+if _INCLUDE_NOISE:
+    CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(5)]
+else:
+    CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(1, 5)]
 
 
 def compute_class_weights(train_loader, num_classes, config, device):
@@ -161,8 +169,9 @@ def create_model(config):
         label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
         with open(label_config_path) as f:
             label_config = yaml.safe_load(f)
-        num_classes = label_config['classes']['num_classes']
-        logger.info(f"Joint training enabled: classification_weight={classification_weight}, num_classes={num_classes}")
+        include_noise = label_config['classes'].get('include_noise', True)
+        num_classes = 5 if include_noise else 4
+        logger.info(f"Joint training enabled: classification_weight={classification_weight}, num_classes={num_classes}, include_noise={include_noise}")
     else:
         num_classes = 0
 
@@ -223,7 +232,8 @@ def create_callbacks(config, results_dir, test_loader=None, num_classes=0):
     vis_callback = VisualizationCallback(
         save_dir=results_dir,
         plot_every_n_epochs=plot_every,
-        test_loader=test_loader
+        test_loader=test_loader,
+        class_names=CLASS_NAMES[:num_classes] if num_classes > 0 else CLASS_NAMES
     )
     callbacks.append(vis_callback)
 

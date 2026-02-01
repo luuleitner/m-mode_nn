@@ -49,7 +49,15 @@ _label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label
 with open(_label_config_path) as _f:
     _label_config = yaml.safe_load(_f)
 _classes_config = _label_config.get('classes', {})
-CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(_classes_config.get('num_classes', 3))]
+_INCLUDE_NOISE = _classes_config.get('include_noise', True)
+_NUM_CLASSES = 5 if _INCLUDE_NOISE else 4
+
+# When noise excluded, labels are remapped 1,2,3,4 → 0,1,2,3 at training time
+# So CLASS_NAMES maps remapped indices to original names
+if _INCLUDE_NOISE:
+    CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(5)]
+else:
+    CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(1, 5)]
 
 
 def compute_balanced_sample_weights(y: np.ndarray) -> np.ndarray:

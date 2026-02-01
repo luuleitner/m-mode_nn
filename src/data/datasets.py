@@ -35,15 +35,38 @@ def get_label_config():
 
 def remap_labels_exclude_noise(labels):
     """
-    Remap labels when noise is excluded: 1,2,3,4 → 0,1,2,3
+    Remap labels when noise is excluded.
+
+    For hard labels: 1,2,3,4 → 0,1,2,3 (subtract 1)
+    For soft labels: remove noise column (index 0), keep columns 1-4, renormalize
 
     Args:
-        labels: numpy array or torch tensor with labels in range [1, 4]
+        labels: numpy array with shape:
+            - (batch,) for hard labels (integers in range [1, 4])
+            - (batch, 5) for soft labels (probability distributions)
 
     Returns:
-        Remapped labels in range [0, 3]
+        Remapped labels:
+            - (batch,) with values in range [0, 3] for hard labels
+            - (batch, 4) renormalized probabilities for soft labels
     """
-    return labels - 1
+    # Check if soft labels (2D with 5 columns) or hard labels (1D)
+    if labels.ndim == 2 and labels.shape[-1] == 5:
+        # Soft labels: remove noise column (0), keep columns 1-4
+        remapped = labels[:, 1:5].copy()
+        # Renormalize so probabilities sum to 1
+        row_sums = remapped.sum(axis=-1, keepdims=True)
+        # Handle edge case: if all probability was in noise class, use uniform distribution
+        zero_mask = row_sums < 1e-8
+        row_sums = np.maximum(row_sums, 1e-8)
+        remapped = remapped / row_sums
+        # Set uniform distribution for degenerate cases (shouldn't happen with proper filtering)
+        if np.any(zero_mask):
+            remapped[zero_mask.squeeze(-1)] = 0.25
+        return remapped
+    else:
+        # Hard labels: subtract 1
+        return labels - 1
 
 from src.data.augmentations import SignalAugmenter
 
@@ -214,10 +237,12 @@ class FilteredSplitH5Dataset(Dataset):
             print(f"Global experiment filter: -> {len(self.metadata)} sequences")
 
         if label_filter is not None:
+            # Support both column names: 'label_logic' or 'token label_logic'
+            label_col = 'label_logic' if 'label_logic' in self.metadata.columns else 'token label_logic'
             self.metadata = self.metadata[
-                self.metadata['label_logic'].isin(label_filter)
+                self.metadata[label_col].isin(label_filter)
             ]
-            print(f"Global label_logic filter: -> {len(self.metadata)} sequences")
+            print(f"Global label filter ({label_col}): -> {len(self.metadata)} sequences")
 
     def _create_splits(self, test_val_strategy,
                        test_val_participant_filter, test_val_session_filter,
@@ -298,8 +323,10 @@ class FilteredSplitH5Dataset(Dataset):
                 filters_applied.append(f"experiment_filter={len(test_val_experiment_filter)} items")
 
             if test_val_label_filter is not None:
+                # Support both column names: 'label_logic' or 'token label_logic'
+                label_col = 'label_logic' if 'label_logic' in test_val_candidates.columns else 'token label_logic'
                 test_val_candidates = test_val_candidates[
-                    test_val_candidates['label_logic'].isin(test_val_label_filter)
+                    test_val_candidates[label_col].isin(test_val_label_filter)
                 ]
                 filters_applied.append(f"label={test_val_label_filter}")
 
@@ -496,11 +523,18 @@ class FilteredSplitH5Dataset(Dataset):
                 # Only one sequence - put it in test
                 return test_val_data, pd.DataFrame()
 
+            # Support both column names for stratification
+            stratify_col = None
+            if 'label_logic' in test_val_data.columns:
+                stratify_col = test_val_data['label_logic']
+            elif 'token label_logic' in test_val_data.columns:
+                stratify_col = test_val_data['token label_logic']
+
             test_data, val_data = train_test_split(
                 test_val_data,
                 test_size=test_ratio,
                 random_state=self.random_seed,
-                stratify=test_val_data['label_logic'] if 'label_logic' in test_val_data.columns else None
+                stratify=stratify_col
             )
 
         elif split_level == 'experiment':
@@ -909,11 +943,18 @@ class FilteredSplitH5Dataset(Dataset):
         Returns:
             dict: {class_id: weight} mapping with remapped labels if noise excluded
         """
-        if 'label_logic' not in self.metadata.columns:
+        # Support both column names: 'label_logic' or 'token label_logic'
+        label_col = None
+        if 'label_logic' in self.metadata.columns:
+            label_col = 'label_logic'
+        elif 'token label_logic' in self.metadata.columns:
+            label_col = 'token label_logic'
+
+        if label_col is None:
             return {i: 1.0 for i in range(self.num_classes)}
 
         # Get class counts from metadata
-        labels = self.metadata['label_logic'].values.copy()
+        labels = self.metadata[label_col].values.copy()
 
         # Remap labels if noise excluded (1,2,3,4 → 0,1,2,3)
         if not self.include_noise:
