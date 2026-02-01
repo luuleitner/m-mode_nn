@@ -11,6 +11,10 @@ Display layout:
 - Row 3: Sample Info | Batch Info | Augmentation status
 - Row 4: 3 US channel M-mode images
 
+Class Labels (configurable via label_config.yaml include_noise setting):
+- 5-class mode: Noise(0), Up(1), Down(2), Left(3), Right(4)
+- 4-class mode: Up(1), Down(2), Left(3), Right(4) - noise excluded
+
 Usage:
     python visualization/token_visualizer_pickle.py
     python visualization/token_visualizer_pickle.py --split train --seed 42
@@ -22,7 +26,7 @@ Options:
     --data, -d  Path to folder containing pkl files (default: from config)
     --split     Which split to visualize: train, val, test (default: train)
     --seed      Random seed for reproducible sample selection
-    --by-class  Show 3 separate figures, one for each label class
+    --by-class  Show separate figures, one for each active label class
     --compare   Show original and augmented version side-by-side
 """
 
@@ -89,6 +93,15 @@ class PickleTokenVisualizer:
             self.pp_pos_thresh = pp_config.get('pos_threshold_percent', 5.0)
             self.pp_peak_window = pp_config.get('peak_window', 3)
             self.pp_timeout = pp_config.get('timeout_samples', 500)
+            # Class configuration
+            classes_config = label_config.get('classes', {})
+            self.include_noise = classes_config.get('include_noise', True)
+            self.num_classes = 5 if self.include_noise else 4
+            config_names = classes_config.get('names', {})
+            self.class_names = {int(k): v for k, v in config_names.items()} if config_names else {
+                0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'
+            }
+            self.class_colors = ['gray', 'green', 'red', 'blue', 'orange']
         else:
             self.label_method = 'position_peak'
             self.label_axis = 'dual'
@@ -97,6 +110,10 @@ class PickleTokenVisualizer:
             self.pp_pos_thresh = 5.0
             self.pp_peak_window = 3
             self.pp_timeout = 500
+            self.include_noise = True
+            self.num_classes = 5
+            self.class_names = {0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'}
+            self.class_colors = ['gray', 'green', 'red', 'blue', 'orange']
 
         # Load available datasets
         for split in ['train', 'val', 'test']:
@@ -645,27 +662,31 @@ class PickleTokenVisualizer:
         return fig
 
     def _add_label_distribution(self, fig, label_data, row, col):
-        """Add label distribution bar chart (5-class)."""
+        """Add label distribution bar chart (dynamic class count)."""
         if label_data is not None:
             label_flat = label_data.flatten()
-            # 5-class names and colors
-            class_names = ['Noise', 'Up', 'Down', 'Left', 'Right']
-            colors = ['gray', 'green', 'red', 'blue', 'orange']
+            # Build class names and colors dynamically
+            if self.include_noise:
+                active_labels = [0, 1, 2, 3, 4]
+            else:
+                active_labels = [1, 2, 3, 4]
+            class_names_list = [self.class_names.get(i, f'Class {i}') for i in active_labels]
+            colors = [self.class_colors[i] if i < len(self.class_colors) else 'gray' for i in active_labels]
 
             if label_flat.size == 1:
                 label_val = int(label_flat[0])
-                probs = [1.0 if i == label_val else 0.0 for i in range(5)]
+                probs = [1.0 if i == label_val else 0.0 for i in active_labels]
             elif label_data.dtype in [np.float32, np.float64] and np.allclose(label_flat.sum(), 1.0, atol=0.1):
                 probs = label_flat.tolist()
-                if len(probs) < 5:
-                    probs.extend([0] * (5 - len(probs)))
+                if len(probs) < len(active_labels):
+                    probs.extend([0] * (len(active_labels) - len(probs)))
             else:
-                counts = [np.sum(label_flat == i) for i in range(5)]
+                counts = [np.sum(label_flat == i) for i in active_labels]
                 total = sum(counts)
                 probs = [c / total if total > 0 else 0 for c in counts]
 
             fig.add_trace(
-                go.Bar(x=class_names, y=probs, marker_color=colors, showlegend=False),
+                go.Bar(x=class_names_list, y=probs, marker_color=colors, showlegend=False),
                 row=row, col=col
             )
             fig.update_yaxes(range=[0, 1], title_text="Prob", row=row, col=col)
@@ -689,8 +710,17 @@ class PickleTokenVisualizer:
             if item.get('is_augmented', meta.get('is_augmented', False)):
                 batch_augmented += 1
 
-        batch_counts = {0: batch_labels.count(0), 1: batch_labels.count(1), 2: batch_labels.count(2)}
+        # Build class distribution dynamically
+        if self.include_noise:
+            active_labels = [0, 1, 2, 3, 4]
+        else:
+            active_labels = [1, 2, 3, 4]
+        batch_counts = {i: batch_labels.count(i) for i in active_labels}
         batch_total = len(batch_labels)
+
+        # Build class distribution string dynamically
+        dist_parts = [f"{self.class_names.get(i, f'C{i}')[0]}: {batch_counts[i]}" for i in active_labels]
+        dist_str = " | ".join(dist_parts)
 
         batch_text = (
             f"<b>Batch Info</b><br><br>"
@@ -699,7 +729,7 @@ class PickleTokenVisualizer:
             f"Augmented: {batch_augmented}<br>"
             f"Original: {batch_total - batch_augmented}<br><br>"
             f"<b>Class Distribution:</b><br>"
-            f"0: {batch_counts[0]} | 1: {batch_counts[1]} | 2: {batch_counts[2]}"
+            f"{dist_str}"
         )
         fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='markers',
                                  marker=dict(opacity=0), showlegend=False, hoverinfo='skip'),
@@ -1110,36 +1140,42 @@ class PickleTokenVisualizer:
         fig.update_xaxes(visible=False, row=info_row, col=1)
         fig.update_yaxes(visible=False, row=info_row, col=1)
 
-        # Label comparison
+        # Label comparison - dynamic class count
+        if self.include_noise:
+            active_labels = [0, 1, 2, 3, 4]
+        else:
+            active_labels = [1, 2, 3, 4]
+        num_active = len(active_labels)
+
         def get_probs(label_data):
             if label_data is None:
-                return [0, 0, 0]
+                return [0] * num_active
             label_flat = label_data.flatten()
             if label_flat.size == 1:
                 lbl = int(label_flat[0])
-                return [1.0 if i == lbl else 0.0 for i in range(3)]
+                return [1.0 if i == lbl else 0.0 for i in active_labels]
             elif np.allclose(label_flat.sum(), 1.0, atol=0.1):
                 probs = label_flat.tolist()
-                return probs + [0] * (3 - len(probs))
+                return probs + [0] * (num_active - len(probs))
             else:
-                counts = [np.sum(label_flat == i) for i in range(3)]
+                counts = [np.sum(label_flat == i) for i in active_labels]
                 total = sum(counts)
                 return [c / total if total > 0 else 0 for c in counts]
 
         probs_orig = get_probs(sample_orig['label'])
         probs_aug = get_probs(sample_aug['label'])
-        class_names = ['Noise', 'Up/Right', 'Down/Left']
+        class_names_list = [self.class_names.get(i, f'Class {i}') for i in active_labels]
 
         # Label column is 3 when we have joystick (zoomed window is col 2), otherwise col 2
         label_comparison_col = 3 if has_joystick else 2
 
         fig.add_trace(
-            go.Bar(name='Original', x=class_names, y=probs_orig,
+            go.Bar(name='Original', x=class_names_list, y=probs_orig,
                    marker_color='green', opacity=0.7),
             row=info_row, col=label_comparison_col
         )
         fig.add_trace(
-            go.Bar(name='Augmented', x=class_names, y=probs_aug,
+            go.Bar(name='Augmented', x=class_names_list, y=probs_aug,
                    marker_color='orange', opacity=0.7),
             row=info_row, col=label_comparison_col
         )
@@ -1201,24 +1237,29 @@ class PickleTokenVisualizer:
         fig.show()
 
     def show_by_class(self, split='train', seed=None):
-        """Show 5 separate visualizations, one for each label class."""
+        """Show separate visualizations, one for each active label class."""
         import plotly.io as pio
         pio.renderers.default = 'browser'
 
-        label_names = {0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'}
+        # Determine which labels to show based on include_noise setting
+        if self.include_noise:
+            target_labels = [0, 1, 2, 3, 4]
+        else:
+            target_labels = [1, 2, 3, 4]
 
-        for target_label in [0, 1, 2, 3, 4]:
+        for target_label in target_labels:
             try:
                 sample = self.load_random_sample(split=split, seed=seed, target_label=target_label)
                 fig = self.visualize_sample(sample)
+                label_name = self.class_names.get(target_label, f'Class {target_label}')
                 fig.update_layout(
                     title=dict(
-                        text=f"Label {target_label} ({label_names[target_label]}) - {split.upper()}",
+                        text=f"Label {target_label} ({label_name}) - {split.upper()}",
                         font=dict(size=16)
                     )
                 )
                 fig.show()
-                print(f"Opened figure for Label {target_label} ({label_names[target_label]})")
+                print(f"Opened figure for Label {target_label} ({label_name})")
             except ValueError as e:
                 print(f"Warning: {e}")
 
@@ -1252,7 +1293,7 @@ Examples:
     parser.add_argument('--seed', type=int, default=None,
                        help='Random seed for reproducible sample selection')
     parser.add_argument('--by-class', action='store_true',
-                       help='Show 3 separate figures, one for each label class')
+                       help='Show separate figures, one for each active label class')
     parser.add_argument('--compare', action='store_true',
                        help='Show original vs augmented side-by-side')
 

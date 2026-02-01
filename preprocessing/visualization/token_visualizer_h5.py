@@ -1,22 +1,19 @@
 """
-Token Sample Visualizer (5-Class Dual-Axis Version)
+Token Sample Visualizer (Dynamic Multi-Class Version)
 
 Visualizes a random token sample from PROCESSED data (train_base_data_path).
 Uses H5 files from a preprocessing run folder to show tokens and their labels.
 Also loads corresponding raw joystick data to show full signal context.
 
 Display layout:
-- Row 1: X-axis joystick (position + derivative) with 5-class label regions
-- Row 2: Y-axis joystick (position + derivative) with 5-class label regions
+- Row 1: X-axis joystick (position + derivative) with label regions
+- Row 2: Y-axis joystick (position + derivative) with label regions
 - Row 3: Info box, Zoomed window, Label distribution
 - Row 4: 3 US channel M-mode images
 
-5-Class Labels:
-- 0: Noise (gray)
-- 1: Up (green)
-- 2: Down (red)
-- 3: Left (blue)
-- 4: Right (orange)
+Class Labels (configurable via label_config.yaml include_noise setting):
+- 5-class mode: Noise(0), Up(1), Down(2), Left(3), Right(4)
+- 4-class mode: Up(1), Down(2), Left(3), Right(4) - noise excluded
 
 Usage:
     python visualization/token_visualizer_h5.py
@@ -31,7 +28,7 @@ Options:
                       If not specified, uses most recent run folder from config
     -c, --config      Path to config.yaml (default: config/config.yaml)
     -s, --seed        Random seed for reproducible sample selection
-    --by-class        Show 5 separate figures, one for each label class
+    --by-class        Show separate figures, one for each active label class
 """
 
 import os
@@ -97,6 +94,16 @@ class TokenVisualizer:
         self.label_method = label_config.get('method', 'position_peak')
         self.label_axis = label_config.get('axis', 'dual')
         self.filters_config = label_config.get('filters', {})
+
+        # Get class configuration
+        classes_config = label_config.get('classes', {})
+        self.include_noise = classes_config.get('include_noise', True)
+        self.num_classes = 5 if self.include_noise else 4
+        config_names = classes_config.get('names', {})
+        self.class_names = {int(k): v for k, v in config_names.items()} if config_names else {
+            0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'
+        }
+        self.class_colors = ['gray', 'green', 'red', 'blue', 'orange']
 
         # Position peak config
         pp_config = label_config.get('position_peak', {})
@@ -178,9 +185,10 @@ class TokenVisualizer:
             # Soft labels - return dominant class
             return int(np.argmax(label_flat))
         else:
-            # Sequence of hard labels - return most common (5 classes)
-            counts = [np.sum(label_flat == i) for i in range(5)]
-            return int(np.argmax(counts))
+            # Sequence of hard labels - return most common
+            unique_labels = np.unique(label_flat)
+            counts = {int(lbl): np.sum(label_flat == lbl) for lbl in unique_labels}
+            return int(max(counts, key=counts.get))
 
     def load_sample_by_label(self, target_label, seed=None):
         """
@@ -579,45 +587,49 @@ class TokenVisualizer:
             row=3, col=2, secondary_y=True
         )
 
-        # ===== ROW 3, COL 3: Label distribution (5-class) =====
+        # ===== ROW 3, COL 3: Label distribution =====
         label_data = sample['label']
         label_flat = label_data.flatten()
 
-        # 5-class names and colors
-        class_names_5 = ['Noise', 'Up', 'Down', 'Left', 'Right']
-        colors_5 = ['gray', 'green', 'red', 'blue', 'orange']
+        # Get class names and colors dynamically
+        all_class_names = [self.class_names.get(i, f'Class {i}') for i in range(5)]
+        all_colors = self.class_colors
 
         if label_flat.size == 1:
             # Single hard label
             label_val = int(label_flat[0])
+            cls_name = self.class_names.get(label_val, str(label_val))
+            cls_color = all_colors[label_val] if label_val < len(all_colors) else 'purple'
             fig.add_trace(
-                go.Bar(x=[class_names_5[label_val] if label_val < 5 else str(label_val)],
-                      y=[1],
-                      marker_color=colors_5[label_val] if label_val < 5 else 'purple',
+                go.Bar(x=[cls_name], y=[1],
+                      marker_color=cls_color,
                       name='Label', showlegend=False),
                 row=3, col=3
             )
             fig.update_yaxes(visible=False, row=3, col=3)
         elif label_data.dtype in [np.float32, np.float64] and np.allclose(label_flat.sum(), 1.0, atol=0.1):
             # Soft labels (probability distribution)
+            n_classes = len(label_flat)
             fig.add_trace(
-                go.Bar(x=class_names_5[:len(label_flat)], y=label_flat,
-                      marker_color=colors_5[:len(label_flat)],
+                go.Bar(x=all_class_names[:n_classes], y=label_flat,
+                      marker_color=all_colors[:n_classes],
                       name='Class Probabilities', showlegend=False),
                 row=3, col=3
             )
             fig.update_yaxes(range=[0, 1], title_text="Probability", row=3, col=3)
         else:
             # Sequence of hard labels - show distribution
-            counts = [np.sum(label_flat == i) for i in range(5)]
+            unique_labels = np.unique(label_flat)
+            max_label = int(max(unique_labels)) + 1
+            counts = [np.sum(label_flat == i) for i in range(max_label)]
             total = sum(counts)
             if total > 0:
                 probs = [c / total for c in counts]
             else:
-                probs = [0] * 5
+                probs = [0] * max_label
             fig.add_trace(
-                go.Bar(x=class_names_5, y=probs,
-                      marker_color=colors_5,
+                go.Bar(x=all_class_names[:max_label], y=probs,
+                      marker_color=all_colors[:max_label],
                       name='Label Distribution', showlegend=False),
                 row=3, col=3
             )
@@ -682,35 +694,38 @@ class TokenVisualizer:
 
     def show_by_class(self, seed=None):
         """
-        Show 5 separate visualizations, one for each label class.
+        Show separate visualizations, one for each label class.
 
-        Opens 5 browser tabs with samples from:
-        - Label 0 (Noise)
-        - Label 1 (Up)
-        - Label 2 (Down)
-        - Label 3 (Left)
-        - Label 4 (Right)
+        Opens browser tabs with samples from each active class.
+        Number of classes depends on include_noise setting in label_config.yaml:
+        - 5 classes: Noise(0), Up(1), Down(2), Left(3), Right(4)
+        - 4 classes: Up(1), Down(2), Left(3), Right(4)
         """
         import plotly.io as pio
         pio.renderers.default = 'browser'
 
-        label_names = {0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'}
+        # Determine which labels to show based on include_noise setting
+        if self.include_noise:
+            target_labels = [0, 1, 2, 3, 4]
+        else:
+            target_labels = [1, 2, 3, 4]
 
-        for target_label in [0, 1, 2, 3, 4]:
+        for target_label in target_labels:
             try:
                 sample = self.load_sample_by_label(target_label, seed=seed)
                 fig = self.visualize_sample(sample=sample)
 
                 # Update title to indicate the label class
+                label_name = self.class_names.get(target_label, f'Class {target_label}')
                 fig.update_layout(
                     title=dict(
-                        text=f"Label {target_label} ({label_names[target_label]}) - "
+                        text=f"Label {target_label} ({label_name}) - "
                              f"S{sample['session_id']}_P{sample['participant_id']}_E{sample['experiment_id']}",
                         font=dict(size=16)
                     )
                 )
                 fig.show()
-                print(f"Opened figure for Label {target_label} ({label_names[target_label]})")
+                print(f"Opened figure for Label {target_label} ({label_name})")
             except ValueError as e:
                 print(f"Warning: {e}")
 
@@ -724,7 +739,7 @@ def main():
     parser.add_argument('--seed', '-s', type=int, default=None,
                        help='Random seed for reproducible sample selection')
     parser.add_argument('--by-class', action='store_true',
-                       help='Show 3 separate figures, one for each label class (0, 1, 2)')
+                       help='Show separate figures, one for each active label class')
 
     args = parser.parse_args()
 

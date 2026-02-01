@@ -129,9 +129,17 @@ class DataProcessor():
 
         # Class configuration (centralized)
         classes_config = self._label_config.get('classes', {})
-        self._num_label_classes = classes_config.get('num_classes', 3)
+        self._include_noise = classes_config.get('include_noise', True)
         self._noise_class = classes_config.get('noise_class', 0)
         self._class_names = classes_config.get('names', {})
+
+        # Derive num_label_classes based on axis mode:
+        # - dual axis: 5 classes (Noise, Up, Down, Left, Right)
+        # - single axis (x or y): 3 classes (Noise, Positive, Negative)
+        if self._label_axis == 'dual':
+            self._num_label_classes = 5
+        else:
+            self._num_label_classes = 3
 
         # Soft labels configuration
         soft_labels_config = self._label_config.get('soft_labels', {})

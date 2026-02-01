@@ -10,12 +10,40 @@ import random
 from collections import defaultdict, Counter
 from sklearn.model_selection import train_test_split
 
-# Load num_classes from centralized label config
+# Load label config from centralized source
 _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _label_config_path = os.path.join(_project_root, 'preprocessing/label_logic/label_config.yaml')
 with open(_label_config_path) as _f:
     _label_config = yaml.safe_load(_f)
-_NUM_CLASSES = _label_config.get('classes', {}).get('num_classes', 3)
+
+# Derive num_classes from include_noise setting
+_classes_config = _label_config.get('classes', {})
+_INCLUDE_NOISE = _classes_config.get('include_noise', True)
+_NOISE_CLASS = _classes_config.get('noise_class', 0)
+_NUM_CLASSES = 5 if _INCLUDE_NOISE else 4
+
+
+def get_label_config():
+    """Get label configuration for external use."""
+    return {
+        'include_noise': _INCLUDE_NOISE,
+        'noise_class': _NOISE_CLASS,
+        'num_classes': _NUM_CLASSES,
+        'names': _classes_config.get('names', {}),
+    }
+
+
+def remap_labels_exclude_noise(labels):
+    """
+    Remap labels when noise is excluded: 1,2,3,4 → 0,1,2,3
+
+    Args:
+        labels: numpy array or torch tensor with labels in range [1, 4]
+
+    Returns:
+        Remapped labels in range [0, 3]
+    """
+    return labels - 1
 
 from src.data.augmentations import SignalAugmenter
 
@@ -56,6 +84,7 @@ class FilteredSplitH5Dataset(Dataset):
                  balance_classes=False,
                  balance_strategy='oversample',
                  oversample_config=None,
+                 include_noise=None,
                  _suppress_split_info=False,
                  _suppress_metadata_info=False):
         """
@@ -76,6 +105,7 @@ class FilteredSplitH5Dataset(Dataset):
                     'target_ratio': 1.0,  # Match majority class
                     'augmentations': {...}  # Augmentation config
                 }
+            include_noise: Override for noise inclusion (None = use label_config.yaml)
             _suppress_split_info: If True, suppress printing of split information
         """
 
@@ -87,6 +117,18 @@ class FilteredSplitH5Dataset(Dataset):
         self.balance_classes = balance_classes
         self.balance_strategy = balance_strategy
         self.oversample_config = oversample_config or {}
+
+        # Noise class handling: use parameter or fall back to global config
+        self.include_noise = include_noise if include_noise is not None else _INCLUDE_NOISE
+        self.num_classes = 5 if self.include_noise else 4
+
+        # Auto-apply label filter when noise excluded
+        if not self.include_noise:
+            # Filter to only include movement labels (1, 2, 3, 4)
+            if global_label_filter is None:
+                global_label_filter = [1, 2, 3, 4]
+                if not _suppress_metadata_info:
+                    print(f"Noise excluded: auto-applying global_label_filter={global_label_filter}")
 
         # Set random seeds for reproducibility
         random.seed(random_seed)
@@ -788,6 +830,10 @@ class FilteredSplitH5Dataset(Dataset):
         # Stack labels
         if len(batch_labels) > 0:
             final_labels = np.stack(batch_labels, axis=0).astype(np.float32)
+
+            # Remap labels when noise is excluded: 1,2,3,4 → 0,1,2,3
+            if not self.include_noise:
+                final_labels = remap_labels_exclude_noise(final_labels)
         else:
             final_labels = None
 
@@ -829,10 +875,12 @@ class FilteredSplitH5Dataset(Dataset):
 
     def _print_dataset_info(self):
         """Print dataset information"""
+        noise_status = "included" if self.include_noise else "excluded (labels remapped)"
         print(f"\n{self.split_type.upper()} Dataset initialized:")
         print(f"  - Total sequences: {len(self.metadata)}")
         print(f"  - Unique experiments: {len(self.experiment_groups)}")
         print(f"  - Total batches: {len(self.batch_mapping)}")
+        print(f"  - Num classes: {self.num_classes} (noise {noise_status})")
 
     def get_sample_weights(self):
         """
@@ -859,22 +907,28 @@ class FilteredSplitH5Dataset(Dataset):
         Compute class weights for weighted loss function.
 
         Returns:
-            dict: {class_id: weight} mapping
+            dict: {class_id: weight} mapping with remapped labels if noise excluded
         """
         if 'label_logic' not in self.metadata.columns:
-            return {i: 1.0 for i in range(_NUM_CLASSES)}
+            return {i: 1.0 for i in range(self.num_classes)}
 
-        class_counts = self.metadata['label_logic'].value_counts().to_dict()
-        total_samples = len(self.metadata)
-        num_classes = len(class_counts)
+        # Get class counts from metadata
+        labels = self.metadata['label_logic'].values.copy()
+
+        # Remap labels if noise excluded (1,2,3,4 → 0,1,2,3)
+        if not self.include_noise:
+            labels = labels - 1
+
+        class_counts = Counter(labels)
+        total_samples = len(labels)
 
         # Inverse frequency weighting
         class_weights = {}
         for cls, count in class_counts.items():
-            class_weights[int(cls)] = total_samples / (num_classes * count)
+            class_weights[int(cls)] = total_samples / (self.num_classes * count)
 
-        # Ensure all classes are present (use global _NUM_CLASSES)
-        for cls in range(_NUM_CLASSES):
+        # Ensure all classes are present
+        for cls in range(self.num_classes):
             if cls not in class_weights:
                 class_weights[cls] = 1.0
 
@@ -905,6 +959,8 @@ def create_filtered_split_datasets(
         balance_classes=False,
         balance_strategy='oversample',
         oversample_config=None,
+        # Noise class handling
+        include_noise=None,
         **kwargs):
     """
     Convenience function to create datasets with filtered splitting
@@ -918,6 +974,7 @@ def create_filtered_split_datasets(
         balance_classes: Enable class balancing for training set
         balance_strategy: 'oversample' or 'undersample'
         oversample_config: Configuration for oversampling method and augmentations
+        include_noise: Include noise class (None = use label_config.yaml setting)
 
     Returns:
         Tuple of (train_dataset, test_dataset, val_dataset)
@@ -950,6 +1007,7 @@ def create_filtered_split_datasets(
         'balance_classes': balance_classes,
         'balance_strategy': balance_strategy,
         'oversample_config': oversample_config,
+        'include_noise': include_noise,
         **filtered_kwargs
     }
 
