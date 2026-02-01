@@ -1,5 +1,10 @@
 """
 Base Trainer - Core training loop with callback and adapter support.
+
+Refactored to use unified loss functions from losses.py:
+- Reconstruction loss is NEVER class-weighted
+- Classification loss CAN be class-weighted (training only)
+- Validation uses unweighted loss for fair comparison
 """
 
 import os
@@ -8,11 +13,14 @@ from datetime import datetime
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+import numpy as np
 from tqdm import tqdm
+from sklearn.metrics import precision_recall_fscore_support
 
 from .adapters.base_adapter import BaseAdapter
 from .callbacks.base_callback import CallbackList
 from .utils.restart_manager import RestartManager
+from .utils.losses import compute_joint_train_loss, compute_joint_eval_loss
 
 import logging
 logger = logging.getLogger(__name__)
@@ -41,12 +49,17 @@ class BaseTrainer:
         # Training state
         self.optimizer = None
         self.scheduler = None
+        self.class_weights = None  # Pre-computed tensor for efficiency
+        self.num_classes = None
         self.history = {
             'train_loss': [],
-            'val_loss': [],           # Weighted (consistent with training)
-            'val_loss_unweighted': [], # Unweighted (true reconstruction quality)
+            'val_loss': [],           # Unweighted (for fair comparison)
             'val_mse': [],
-            'learning_rates': []
+            'learning_rates': [],
+            'train_accuracy': [],
+            'val_accuracy': [],
+            'val_balanced_accuracy': [],
+            'per_class_acc': []
         }
 
         self.restart_manager = RestartManager(self.results_dir)
@@ -105,115 +118,123 @@ class BaseTrainer:
         if self.scheduler:
             logger.info(f"Scheduler: {type(self.scheduler).__name__}")
 
-    def _to_hard_labels(self, labels):
+    def _prepare_labels(self, labels):
         """
-        Convert soft labels [B, num_classes] to hard labels [B].
+        Prepare labels for loss computation.
 
-        Handles multiple label formats:
-        - Soft labels: [B, num_classes] -> argmax to get class index
-        - Hard labels: [B, 1] -> squeeze
-        - Hard labels: [B] -> pass through
+        Args:
+            labels: Raw labels from dataset (soft or hard)
+
+        Returns:
+            tuple: (soft_labels, hard_labels) where soft_labels may be None
         """
+        if labels is None:
+            return None, None
+
+        labels = labels.to(self.device)
+
         if labels.dim() > 1 and labels.shape[-1] > 1:
-            hard_labels = labels.argmax(dim=-1)
-            if hard_labels.dim() > 1:
-                hard_labels = hard_labels[:, 0]
-        elif labels.dim() > 1:
-            hard_labels = labels.squeeze(-1)
+            # Soft labels: (B, num_classes)
+            soft_labels = labels.float()
+            hard_labels = labels.argmax(dim=-1).long()
         else:
-            hard_labels = labels
-        return hard_labels.long()
+            # Hard labels
+            hard_labels = labels.squeeze() if labels.dim() > 1 else labels
+            hard_labels = hard_labels.long()
+            soft_labels = None
 
-    def compute_loss(self, reconstruction, target, embedding, labels=None, logits=None, loss_weights=None):
+        return soft_labels, hard_labels
+
+    def set_class_weights(self, class_weights_dict, num_classes):
         """
-        Compute combined loss: reconstruction (MSE + L1) + embedding regularization + classification.
+        Set class weights from dict to tensor for efficient GPU computation.
+
+        Args:
+            class_weights_dict: Dict mapping class_idx -> weight
+            num_classes: Number of classes
+        """
+        self.num_classes = num_classes
+        if class_weights_dict is not None:
+            weights = torch.tensor(
+                [class_weights_dict.get(i, 1.0) for i in range(num_classes)],
+                dtype=torch.float32
+            )
+            self.class_weights = weights.to(self.device)
+            logger.info(f"Class weights set: {weights.tolist()}")
+        else:
+            self.class_weights = None
+
+    def compute_loss(self, reconstruction, target, embedding, labels=None, logits=None,
+                     loss_weights=None, is_training=True):
+        """
+        Compute joint loss using unified loss functions.
+
+        Key design:
+        - Reconstruction loss is NEVER class-weighted
+        - Classification loss is weighted during training only
 
         Args:
             reconstruction: Reconstructed input
             target: Original input
-            embedding: Latent embedding
+            embedding: Latent embedding (for regularization)
             labels: Class labels (soft or hard)
             logits: Classification logits from classifier head
-            loss_weights: Dict with loss component weights
+            loss_weights: Dict with mse_weight, l1_weight, cls_weight, embedding_reg
+            is_training: If True, apply class weights to classification
+
+        Returns:
+            tuple: (total_loss, loss_dict)
         """
         if loss_weights is None:
-            loss_weights = {'mse_weight': 0.8, 'l1_weight': 0.2, 'embedding_reg': 0.001}
+            loss_weights = {'mse_weight': 0.5, 'l1_weight': 0.5, 'cls_weight': 0.0, 'embedding_reg': 0.001}
 
-        class_weights = loss_weights.get('class_weights', None)
-        classification_weight = loss_weights.get('classification_weight', 0.0)
+        soft_labels, hard_labels = self._prepare_labels(labels)
 
-        # Apply class-weighted loss if labels and class_weights are provided
-        if labels is not None and class_weights is not None:
-            hard_labels = self._to_hard_labels(labels)
-
-            # Compute per-sample weights based on class
-            sample_weights = torch.tensor(
-                [class_weights.get(int(lbl.item()), 1.0) for lbl in hard_labels],
-                device=reconstruction.device, dtype=reconstruction.dtype
-            )
-
-            # Compute per-sample losses, then weight
-            # MSE per sample: mean over (C, H, W) dims
-            mse_per_sample = F.mse_loss(reconstruction, target, reduction='none').mean(dim=(1, 2, 3))
-            l1_per_sample = F.l1_loss(reconstruction, target, reduction='none').mean(dim=(1, 2, 3))
-
-            # Weighted mean
-            mse_loss = (sample_weights * mse_per_sample).mean()
-            l1_loss = (sample_weights * l1_per_sample).mean()
-        else:
-            mse_loss = F.mse_loss(reconstruction, target)
-            l1_loss = F.l1_loss(reconstruction, target)
-
-        embedding_reg = embedding.pow(2).mean()
-
-        total_loss = (
-            loss_weights['mse_weight'] * mse_loss +
-            loss_weights['l1_weight'] * l1_loss +
-            loss_weights['embedding_reg'] * embedding_reg
-        )
-
-        loss_dict = {
-            'total_loss': total_loss.item(),
-            'mse_loss': mse_loss.item(),
-            'l1_loss': l1_loss.item(),
-            'embedding_reg': embedding_reg.item()
+        # Use unified joint loss (reconstruction never weighted, classification weighted for training)
+        cls_weight = loss_weights.get('cls_weight', loss_weights.get('classification_weight', 0.0))
+        joint_weights = {
+            'mse_weight': loss_weights.get('mse_weight', 0.5),
+            'l1_weight': loss_weights.get('l1_weight', 0.5),
+            'cls_weight': cls_weight
         }
 
-        # Classification loss (if classifier head is used)
-        if logits is not None and labels is not None and classification_weight > 0:
-            hard_labels = self._to_hard_labels(labels)
+        if is_training:
+            total_loss, loss_dict = compute_joint_train_loss(
+                reconstruction, target, logits, soft_labels, hard_labels,
+                self.class_weights, joint_weights
+            )
+        else:
+            total_loss, loss_dict = compute_joint_eval_loss(
+                reconstruction, target, logits, soft_labels, hard_labels,
+                joint_weights
+            )
 
-            # Apply class weights to classification loss if available
-            if class_weights is not None:
-                num_classes = logits.shape[-1]
-                cls_weight_tensor = torch.tensor(
-                    [class_weights.get(i, 1.0) for i in range(num_classes)],
-                    device=logits.device, dtype=logits.dtype
-                )
-                cls_loss = F.cross_entropy(logits, hard_labels, weight=cls_weight_tensor)
-            else:
-                cls_loss = F.cross_entropy(logits, hard_labels)
+        # Add embedding regularization
+        embedding_reg_weight = loss_weights.get('embedding_reg', 0.001)
+        if embedding_reg_weight > 0:
+            embedding_reg = embedding.pow(2).mean()
+            total_loss = total_loss + embedding_reg_weight * embedding_reg
+            loss_dict['embedding_reg'] = embedding_reg.item()
+            loss_dict['total'] = total_loss.item()
 
-            total_loss = total_loss + classification_weight * cls_loss
-
-            loss_dict['cls_loss'] = cls_loss.item()
-            loss_dict['total_loss'] = total_loss.item()
-
-            # Track classification accuracy
-            with torch.no_grad():
-                preds = logits.argmax(dim=-1)
-                accuracy = (preds == hard_labels).float().mean().item()
-                loss_dict['cls_accuracy'] = accuracy
+        # Rename for backward compatibility
+        loss_dict['total_loss'] = loss_dict.get('total', total_loss.item())
+        loss_dict['mse_loss'] = loss_dict.get('mse', 0.0)
+        loss_dict['l1_loss'] = loss_dict.get('l1', 0.0)
+        if 'accuracy' in loss_dict:
+            loss_dict['cls_accuracy'] = loss_dict['accuracy']
 
         return total_loss, loss_dict
 
     def train_epoch(self, train_loader, epoch, loss_weights=None, grad_clip_norm=1.0):
-        """Train for one epoch. Returns average loss."""
+        """Train for one epoch. Returns (avg_loss, avg_accuracy, per_class_acc)."""
         self.model.train()
         total_loss = 0
         total_correct = 0
         total_samples = 0
         has_classifier = False
+        all_preds = []
+        all_labels = []
 
         pbar = tqdm(train_loader, desc=f'Epoch {epoch + 1}')
 
@@ -230,24 +251,31 @@ class BaseTrainer:
                 logits = None
 
             loss, loss_dict = self.compute_loss(
-                reconstruction, data, embedding, labels, logits, loss_weights
+                reconstruction, data, embedding, labels, logits, loss_weights, is_training=True
             )
 
             # Backward
             self.optimizer.zero_grad()
             loss.backward()
 
+            # Log gradient norm before clipping
             if grad_clip_norm > 0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=grad_clip_norm)
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=grad_clip_norm)
+            else:
+                grad_norm = 0.0
 
             self.optimizer.step()
 
-            total_loss += loss.item()
-            if 'cls_accuracy' in loss_dict:
-                # Track correct predictions and samples for proper averaging
-                batch_size = data.size(0)
-                total_correct += loss_dict['cls_accuracy'] * batch_size
-                total_samples += batch_size
+            batch_size = data.size(0)
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
+
+            if 'cls_accuracy' in loss_dict and logits is not None:
+                soft_labels, hard_labels = self._prepare_labels(labels)
+                preds = logits.argmax(dim=-1)
+                total_correct += (preds == hard_labels).sum().item()
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(hard_labels.cpu().numpy())
 
             # Update progress bar
             postfix = {'loss': f'{loss.item():.4f}'}
@@ -257,37 +285,53 @@ class BaseTrainer:
 
             self.callbacks.on_batch_end(batch_idx, loss_dict)
 
-        avg_loss = total_loss / len(train_loader)
+        avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
+
         if has_classifier and total_samples > 0:
-            avg_accuracy = total_correct / total_samples  # Sample-weighted accuracy
-            return avg_loss, avg_accuracy
-        return avg_loss
+            avg_accuracy = total_correct / total_samples
+            # Compute per-class accuracy
+            all_preds = np.array(all_preds)
+            all_labels = np.array(all_labels)
+            per_class_acc = {}
+            if self.num_classes:
+                for cls in range(self.num_classes):
+                    mask = all_labels == cls
+                    if mask.sum() > 0:
+                        per_class_acc[cls] = float((all_preds[mask] == cls).mean())
+                    else:
+                        per_class_acc[cls] = 0.0
+
+            # Store for confusion matrix plotting
+            self._last_train_predictions = all_preds
+            self._last_train_labels = all_labels
+
+            return avg_loss, avg_accuracy, per_class_acc
+
+        return avg_loss, None, {}
 
     def validate_epoch(self, val_loader, epoch, loss_weights=None):
         """
-        Validate for one epoch.
+        Validate for one epoch. Uses UNWEIGHTED loss for fair comparison.
 
         Returns:
-            dict with keys:
-                - weighted_loss: Loss with class weighting (consistent with training)
-                - mse: Pure MSE reconstruction error
-                - unweighted_loss: Loss without class weighting (true reconstruction quality)
-                - cls_accuracy: Classification accuracy (if classifier enabled)
-                - cls_loss: Classification loss (if classifier enabled)
+            dict with comprehensive metrics including per-class breakdown
         """
         self.model.eval()
-        total_weighted_loss = 0
-        total_unweighted_loss = 0
+        total_loss = 0
         total_mse = 0
-        total_cls_accuracy = 0
-        total_cls_loss = 0
+        total_samples = 0
+        total_correct = 0
         has_classifier = False
+        all_preds = []
+        all_labels = []
+        all_probs = []
 
         with torch.no_grad():
             for batch in val_loader:
                 data, labels = self.adapter.prepare_batch(batch, self.device)
+                batch_size = data.size(0)
 
-                # Forward - handle both 2 and 3 output formats
+                # Forward
                 outputs = self.model(data)
                 if len(outputs) == 3:
                     reconstruction, embedding, logits = outputs
@@ -296,36 +340,87 @@ class BaseTrainer:
                     reconstruction, embedding = outputs
                     logits = None
 
-                # Weighted loss (consistent with training objective)
-                _, weighted_dict = self.compute_loss(
-                    reconstruction, data, embedding, labels, logits, loss_weights
-                )
-
-                # Unweighted loss (true reconstruction quality across all classes)
-                _, unweighted_dict = self.compute_loss(
-                    reconstruction, data, embedding
+                # Unweighted loss for fair evaluation
+                loss, loss_dict = self.compute_loss(
+                    reconstruction, data, embedding, labels, logits, loss_weights, is_training=False
                 )
 
                 mse = F.mse_loss(reconstruction, data)
 
-                total_weighted_loss += weighted_dict['total_loss']
-                total_unweighted_loss += unweighted_dict['total_loss']
-                total_mse += mse.item()
+                total_loss += loss.item() * batch_size
+                total_mse += mse.item() * batch_size
+                total_samples += batch_size
 
-                if 'cls_accuracy' in weighted_dict:
-                    total_cls_accuracy += weighted_dict['cls_accuracy']
-                    total_cls_loss += weighted_dict.get('cls_loss', 0)
+                if logits is not None and labels is not None:
+                    soft_labels, hard_labels = self._prepare_labels(labels)
+                    preds = logits.argmax(dim=-1)
+                    probs = F.softmax(logits, dim=-1)
 
-        n_batches = len(val_loader)
+                    total_correct += (preds == hard_labels).sum().item()
+                    all_preds.extend(preds.cpu().numpy())
+                    all_labels.extend(hard_labels.cpu().numpy())
+                    all_probs.extend(probs.cpu().numpy())
+
         result = {
-            'weighted_loss': total_weighted_loss / n_batches,
-            'mse': total_mse / n_batches,
-            'unweighted_loss': total_unweighted_loss / n_batches
+            'loss': total_loss / total_samples if total_samples > 0 else 0.0,
+            'mse': total_mse / total_samples if total_samples > 0 else 0.0,
         }
 
-        if has_classifier:
-            result['cls_accuracy'] = total_cls_accuracy / n_batches
-            result['cls_loss'] = total_cls_loss / n_batches
+        if has_classifier and all_preds:
+            all_preds = np.array(all_preds)
+            all_labels = np.array(all_labels)
+            all_probs = np.array(all_probs)
+
+            result['accuracy'] = total_correct / total_samples
+            result['cls_accuracy'] = result['accuracy']  # Backward compat
+
+            # Per-class accuracy
+            per_class_acc = {}
+            if self.num_classes:
+                for cls in range(self.num_classes):
+                    mask = all_labels == cls
+                    if mask.sum() > 0:
+                        per_class_acc[cls] = float((all_preds[mask] == cls).mean())
+                    else:
+                        per_class_acc[cls] = 0.0
+                result['per_class_acc'] = per_class_acc
+
+                # Balanced accuracy (mean of per-class recalls)
+                result['balanced_accuracy'] = np.mean(list(per_class_acc.values()))
+
+                # Per-class precision, recall, F1
+                precision, recall, f1, support = precision_recall_fscore_support(
+                    all_labels, all_preds,
+                    labels=list(range(self.num_classes)),
+                    zero_division=0
+                )
+                result['per_class_metrics'] = {
+                    cls: {'precision': precision[cls], 'recall': recall[cls],
+                          'f1': f1[cls], 'support': support[cls]}
+                    for cls in range(self.num_classes)
+                }
+
+                # Mean confidence per class
+                mean_confidence = {}
+                for cls in range(self.num_classes):
+                    mask = all_preds == cls
+                    if mask.sum() > 0:
+                        mean_confidence[cls] = float(all_probs[mask, cls].mean())
+                    else:
+                        mean_confidence[cls] = 0.0
+                result['mean_confidence'] = mean_confidence
+
+            result['predictions'] = all_preds
+            result['labels'] = all_labels
+            result['probabilities'] = all_probs
+
+            # Store for WandB callback confusion matrix
+            self._last_val_predictions = all_preds
+            self._last_val_labels = all_labels
+
+        # Backward compatibility keys
+        result['weighted_loss'] = result['loss']
+        result['unweighted_loss'] = result['loss']
 
         return result
 
@@ -358,22 +453,20 @@ class BaseTrainer:
         for epoch in range(start_epoch, epochs):
             self.callbacks.on_epoch_begin(epoch)
 
-            # Train epoch - may return (loss,) or (loss, accuracy)
-            train_result = self.train_epoch(train_loader, epoch, loss_weights, grad_clip_norm)
-            if isinstance(train_result, tuple):
-                avg_train_loss, train_accuracy = train_result
-            else:
-                avg_train_loss = train_result
-                train_accuracy = None
+            # Train epoch - returns (loss, accuracy, per_class_acc)
+            avg_train_loss, train_accuracy, train_per_class = self.train_epoch(
+                train_loader, epoch, loss_weights, grad_clip_norm
+            )
 
-            # Validate epoch - returns dict
+            # Validate epoch - returns dict with comprehensive metrics
             val_metrics = self.validate_epoch(val_loader, epoch, loss_weights)
-            avg_val_loss = val_metrics['weighted_loss']
+            avg_val_loss = val_metrics['loss']
             avg_val_mse = val_metrics['mse']
-            avg_val_loss_unweighted = val_metrics['unweighted_loss']
-            val_accuracy = val_metrics.get('cls_accuracy')
+            val_accuracy = val_metrics.get('accuracy')
+            val_balanced_acc = val_metrics.get('balanced_accuracy', 0.0)
+            val_per_class = val_metrics.get('per_class_acc', {})
 
-            # Update scheduler (use weighted val loss for consistency with training)
+            # Update scheduler (use val loss)
             if self.scheduler:
                 if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(avg_val_loss)
@@ -384,22 +477,19 @@ class BaseTrainer:
             current_lr = self.optimizer.param_groups[0]['lr']
             self.history['train_loss'].append(avg_train_loss)
             self.history['val_loss'].append(avg_val_loss)
-            self.history['val_loss_unweighted'].append(avg_val_loss_unweighted)
             self.history['val_mse'].append(avg_val_mse)
             self.history['learning_rates'].append(current_lr)
 
             # Track classification metrics if available
             if train_accuracy is not None:
-                if 'train_accuracy' not in self.history:
-                    self.history['train_accuracy'] = []
-                    self.history['val_accuracy'] = []
                 self.history['train_accuracy'].append(train_accuracy)
                 self.history['val_accuracy'].append(val_accuracy)
+                self.history['val_balanced_accuracy'].append(val_balanced_acc)
+                self.history['per_class_acc'].append(val_per_class)
 
             callback_logs = {
                 'train_loss': avg_train_loss,
                 'val_loss': avg_val_loss,
-                'val_loss_unweighted': avg_val_loss_unweighted,
                 'val_mse': avg_val_mse,
                 'learning_rate': current_lr,
                 'epoch': epoch
@@ -407,18 +497,22 @@ class BaseTrainer:
             if train_accuracy is not None:
                 callback_logs['train_accuracy'] = train_accuracy
                 callback_logs['val_accuracy'] = val_accuracy
+                callback_logs['val_balanced_accuracy'] = val_balanced_acc
+                callback_logs['per_class_acc'] = val_per_class
 
             self.callbacks.on_epoch_end(epoch, callback_logs)
 
-            # Log progress - use print to ensure visibility (tqdm can hide logger output)
+            # Log progress
             log_msg = (
                 f"Epoch {epoch + 1}/{epochs}: "
-                f"Train={avg_train_loss:.4f}, Val={avg_val_loss:.4f} (unw={avg_val_loss_unweighted:.4f}), "
+                f"Train={avg_train_loss:.4f}, Val={avg_val_loss:.4f}, "
                 f"MSE={avg_val_mse:.4f}, LR={current_lr:.2e}"
             )
             if train_accuracy is not None:
                 log_msg += f", TrainAcc={train_accuracy:.2%}, ValAcc={val_accuracy:.2%}"
-            print(log_msg)  # Print ensures visibility
+                if val_balanced_acc > 0:
+                    log_msg += f", BalAcc={val_balanced_acc:.2%}"
+            print(log_msg)
             logger.info(log_msg)
 
             # Check for early stopping
@@ -434,50 +528,42 @@ class BaseTrainer:
         logger.info("Training completed!")
         return self.history
 
-    def evaluate(self, test_loader):
-        """Evaluate on test set. Returns metrics dict."""
-        self.model.eval()
-        total_mse = total_mae = total_samples = 0
-        total_correct = 0
-        has_classifier = False
-
-        with torch.no_grad():
-            for batch in tqdm(test_loader, desc="Evaluating"):
-                data, labels = self.adapter.prepare_batch(batch, self.device)
-
-                # Handle both 2 and 3 output formats
-                outputs = self.model(data)
-                if len(outputs) == 3:
-                    reconstruction, embedding, logits = outputs
-                    has_classifier = True
-
-                    # Compute accuracy
-                    if labels is not None:
-                        hard_labels = self._to_hard_labels(labels)
-                        preds = logits.argmax(dim=-1)
-                        total_correct += (preds == hard_labels).sum().item()
-                else:
-                    reconstruction, embedding = outputs
-
-                mse = F.mse_loss(reconstruction, data, reduction='sum')
-                mae = F.l1_loss(reconstruction, data, reduction='sum')
-
-                total_mse += mse.item()
-                total_mae += mae.item()
-                total_samples += data.size(0)
+    def evaluate(self, test_loader, loss_weights=None):
+        """Evaluate on test set. Returns comprehensive metrics dict."""
+        # Use validate_epoch for consistent metrics
+        val_metrics = self.validate_epoch(test_loader, epoch=0, loss_weights=loss_weights)
 
         metrics = {
-            'test_mse': total_mse / total_samples,
-            'test_mae': total_mae / total_samples,
-            'test_samples': total_samples
+            'test_mse': val_metrics['mse'],
+            'test_mae': val_metrics['mse'],  # Approx, use loss for MAE
+            'test_loss': val_metrics['loss'],
+            'test_samples': len(val_metrics.get('predictions', []))
         }
 
-        if has_classifier:
-            metrics['test_accuracy'] = total_correct / total_samples
+        if 'accuracy' in val_metrics:
+            metrics['test_accuracy'] = val_metrics['accuracy']
+            metrics['test_balanced_accuracy'] = val_metrics.get('balanced_accuracy', 0.0)
 
-        log_msg = f"Test Results - MSE: {metrics['test_mse']:.6f}, MAE: {metrics['test_mae']:.6f}"
-        if has_classifier:
+        if 'per_class_acc' in val_metrics:
+            metrics['per_class_accuracy'] = val_metrics['per_class_acc']
+
+        if 'per_class_metrics' in val_metrics:
+            metrics['per_class_metrics'] = val_metrics['per_class_metrics']
+
+        if 'predictions' in val_metrics:
+            metrics['predictions'] = val_metrics['predictions']
+            metrics['labels'] = val_metrics['labels']
+            metrics['probabilities'] = val_metrics['probabilities']
+
+            # Store for WandB callback to plot test confusion matrix
+            self._last_test_predictions = val_metrics['predictions']
+            self._last_test_labels = val_metrics['labels']
+
+        log_msg = f"Test Results - MSE: {metrics['test_mse']:.6f}, Loss: {metrics['test_loss']:.6f}"
+        if 'test_accuracy' in metrics:
             log_msg += f", Accuracy: {metrics['test_accuracy']:.2%}"
+            if metrics.get('test_balanced_accuracy', 0) > 0:
+                log_msg += f", Balanced: {metrics['test_balanced_accuracy']:.2%}"
         logger.info(log_msg)
 
         return metrics

@@ -213,6 +213,9 @@ def train_single_fold(config, fold_dir, fold_idx, run_dir, device, args):
             logger.info(f"Strategy: {strategy}, holdout session: {fold_info.get('holdout_session')}")
         elif strategy == 'participant_lopo':
             logger.info(f"Strategy: {strategy}, holdout participant: {fold_info.get('holdout_participant')}")
+        elif strategy == 'participant_within':
+            logger.info(f"Strategy: {strategy}, participant: {fold_info.get('participant')} "
+                       f"({fold_info.get('n_experiments', '?')} experiments)")
 
     # Load datasets
     train_ds, val_ds, test_ds = load_fold_datasets(fold_dir)
@@ -330,6 +333,10 @@ def aggregate_cv_results(run_dir, fold_results):
 
     n_folds = len(fold_results)
 
+    # Detect strategy from fold info
+    strategy = fold_results[0].get('fold_info', {}).get('strategy', 'unknown') if fold_results else 'unknown'
+    is_participant_within = strategy == 'participant_within'
+
     # Extract metrics
     val_accs = [r['best_val_acc'] for r in fold_results]
     test_accs = [r.get('test_accuracy', 0) for r in fold_results if 'test_accuracy' in r]
@@ -345,6 +352,7 @@ def aggregate_cv_results(run_dir, fold_results):
     # Build summary
     summary = {
         'n_folds': n_folds,
+        'strategy': strategy,
         'run_dir': run_dir,
         'aggregated_at': datetime.now().isoformat(),
         'validation_accuracy': {
@@ -372,22 +380,58 @@ def aggregate_cv_results(run_dir, fold_results):
                 'per_fold': accs
             }
 
+    # For participant_within strategy: add per-participant breakdown and ranking
+    if is_participant_within:
+        per_participant = {}
+        for r in fold_results:
+            participant = r.get('fold_info', {}).get('participant', r['fold_idx'])
+            per_participant[f"participant_{participant}"] = {
+                'val_accuracy': r['best_val_acc'],
+                'test_accuracy': r.get('test_accuracy', 0),
+                'n_experiments': r.get('fold_info', {}).get('n_experiments', 0),
+                'per_class_accuracy': r.get('per_class_accuracy', {})
+            }
+
+        summary['per_participant'] = per_participant
+
+        # Create ranking by test accuracy
+        ranking = sorted(
+            [(p, data['test_accuracy']) for p, data in per_participant.items()],
+            key=lambda x: x[1],
+            reverse=True
+        )
+        summary['participant_ranking'] = [
+            {'participant': p, 'test_accuracy': acc} for p, acc in ranking
+        ]
+
     # Print summary
-    logger.info(f"\nNumber of folds: {n_folds}")
+    logger.info(f"\nStrategy: {strategy}")
+    logger.info(f"Number of folds: {n_folds}")
+
+    if is_participant_within:
+        logger.info(f"\n--- Per-Participant Results ---")
+        for p_name, p_data in summary['per_participant'].items():
+            logger.info(f"  {p_name}: val={p_data['val_accuracy']:.2%}, test={p_data['test_accuracy']:.2%} "
+                       f"({p_data['n_experiments']} experiments)")
+
+        logger.info(f"\n--- Participant Ranking (by test accuracy) ---")
+        for i, item in enumerate(summary['participant_ranking'], 1):
+            logger.info(f"  {i}. {item['participant']}: {item['test_accuracy']:.2%}")
+
     logger.info(f"\nValidation Accuracy:")
-    logger.info(f"  Mean ± Std: {summary['validation_accuracy']['mean']:.2%} ± {summary['validation_accuracy']['std']:.2%}")
+    logger.info(f"  Mean +/- Std: {summary['validation_accuracy']['mean']:.2%} +/- {summary['validation_accuracy']['std']:.2%}")
     logger.info(f"  Range: [{summary['validation_accuracy']['min']:.2%}, {summary['validation_accuracy']['max']:.2%}]")
     logger.info(f"  Per fold: {[f'{a:.2%}' for a in val_accs]}")
 
     if test_accs:
         logger.info(f"\nTest Accuracy:")
-        logger.info(f"  Mean ± Std: {summary['test_accuracy']['mean']:.2%} ± {summary['test_accuracy']['std']:.2%}")
+        logger.info(f"  Mean +/- Std: {summary['test_accuracy']['mean']:.2%} +/- {summary['test_accuracy']['std']:.2%}")
         logger.info(f"  Range: [{summary['test_accuracy']['min']:.2%}, {summary['test_accuracy']['max']:.2%}]")
         logger.info(f"  Per fold: {[f'{a:.2%}' for a in test_accs]}")
 
     logger.info(f"\nPer-Class Test Accuracy:")
     for name, data in summary['per_class_accuracy'].items():
-        logger.info(f"  {name}: {data['mean']:.2%} ± {data['std']:.2%}")
+        logger.info(f"  {name}: {data['mean']:.2%} +/- {data['std']:.2%}")
 
     # Save summary
     summary_path = os.path.join(run_dir, 'cv_results.json')
@@ -410,14 +454,34 @@ def create_cv_summary_plot(run_dir, summary, fold_results):
         fold_results: List of fold result dictionaries
     """
     n_folds = summary['n_folds']
+    strategy = summary.get('strategy', 'unknown')
+    is_participant_within = strategy == 'participant_within'
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-    # Plot 1: Accuracy per fold
+    # Plot 1: Accuracy per fold/participant
     ax = axes[0]
     x = range(n_folds)
     val_accs = summary['validation_accuracy']['per_fold']
     test_accs = summary['test_accuracy']['per_fold']
+
+    # Determine x-axis labels based on strategy
+    if is_participant_within:
+        # Use participant names from fold_results
+        x_labels = []
+        for r in fold_results:
+            participant = r.get('fold_info', {}).get('participant', f'P{r["fold_idx"]}')
+            # Shorten long participant names
+            if len(str(participant)) > 10:
+                x_labels.append(str(participant)[:8] + '..')
+            else:
+                x_labels.append(str(participant))
+        xlabel_text = 'Participant'
+        title_text = 'Accuracy per Participant'
+    else:
+        x_labels = [f'Fold {i}' for i in x]
+        xlabel_text = 'Fold'
+        title_text = 'Accuracy per Fold'
 
     width = 0.35
     ax.bar([i - width/2 for i in x], val_accs, width, label='Validation', color='steelblue')
@@ -428,11 +492,11 @@ def create_cv_summary_plot(run_dir, summary, fold_results):
     if test_accs:
         ax.axhline(y=summary['test_accuracy']['mean'], color='darkorange', linestyle='--', alpha=0.7)
 
-    ax.set_xlabel('Fold')
+    ax.set_xlabel(xlabel_text)
     ax.set_ylabel('Accuracy')
-    ax.set_title('Accuracy per Fold')
+    ax.set_title(title_text)
     ax.set_xticks(x)
-    ax.set_xticklabels([f'Fold {i}' for i in x])
+    ax.set_xticklabels(x_labels, rotation=45 if is_participant_within else 0, ha='right' if is_participant_within else 'center')
     ax.legend()
     ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3)
@@ -459,7 +523,35 @@ def create_cv_summary_plot(run_dir, summary, fold_results):
     ax = axes[2]
     ax.axis('off')
 
-    stats_text = f"""
+    # Build summary text based on strategy
+    if is_participant_within:
+        stats_text = f"""
+Within-Subject CV Summary
+{'='*30}
+
+Participants: {n_folds}
+
+Validation Accuracy:
+  Mean: {summary['validation_accuracy']['mean']:.2%}
+  Std:  {summary['validation_accuracy']['std']:.2%}
+
+Test Accuracy:
+  Mean: {summary['test_accuracy']['mean']:.2%}
+  Std:  {summary['test_accuracy']['std']:.2%}
+
+Ranking (by test acc):
+"""
+        # Add top participants from ranking
+        ranking = summary.get('participant_ranking', [])
+        for i, item in enumerate(ranking[:5], 1):  # Top 5
+            p_name = item['participant'].replace('participant_', '')
+            if len(p_name) > 8:
+                p_name = p_name[:6] + '..'
+            stats_text += f"  {i}. {p_name}: {item['test_accuracy']:.1%}\n"
+        if len(ranking) > 5:
+            stats_text += f"  ... ({len(ranking) - 5} more)\n"
+    else:
+        stats_text = f"""
 Cross-Validation Summary
 {'='*30}
 
@@ -475,8 +567,8 @@ Test Accuracy:
 
 Per-Class (Test):
 """
-    for name, data in summary['per_class_accuracy'].items():
-        stats_text += f"  {name}: {data['mean']:.2%} ± {data['std']:.2%}\n"
+        for name, data in summary['per_class_accuracy'].items():
+            stats_text += f"  {name}: {data['mean']:.2%} ± {data['std']:.2%}\n"
 
     ax.text(0.1, 0.9, stats_text, transform=ax.transAxes, fontsize=11,
             verticalalignment='top', fontfamily='monospace',

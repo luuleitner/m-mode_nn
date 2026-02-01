@@ -270,6 +270,7 @@ def create_visualization(exp_path, data):
     if config_info['envelope']: processing_parts.append('Env')
     if config_info['logcompression']: processing_parts.append('Log')
     if config_info['normalization']: processing_parts.append(f"Norm:{config_info['normalization']}")
+    if config_info.get('differentiation'): processing_parts.append(f"Diff:{config_info['differentiation']}")
     if dec_factor > 1: processing_parts.append(f"Dec:÷{dec_factor}")
 
     # Layout

@@ -93,6 +93,17 @@ class DataProcessor():
         self._normalization_flag = self._config.preprocess.signal.normalization.apply
         self._normalization_technique = self._config.preprocess.signal.normalization.method
 
+        #---Differentiation (temporal gradient along pulse axis)
+        diff_cfg = getattr(self._config.preprocess.signal, 'differentiation', None)
+        if diff_cfg is not None:
+            self._differentiation_flag = getattr(diff_cfg, 'apply', False)
+            self._differentiation_method = getattr(diff_cfg, 'method', 'gradient')
+            self._differentiation_order = getattr(diff_cfg, 'order', 1)
+        else:
+            self._differentiation_flag = False
+            self._differentiation_method = 'gradient'
+            self._differentiation_order = 1
+
         # Tokens
         self._token_window = self._config.preprocess.tokenization.window
         self._token_stride = self._config.preprocess.tokenization.stride
@@ -326,6 +337,9 @@ class DataProcessor():
                 'logcompression_dbrange': self._logcompression_dbrange,
                 'normalization_flag': self._normalization_flag,
                 'normalization_technique': self._normalization_technique,
+                'differentiation_flag': self._differentiation_flag,
+                'differentiation_method': self._differentiation_method,
+                'differentiation_order': self._differentiation_order,
                 'token_window': self._token_window,
                 'token_stride': self._token_stride,
                 'sequence_window': self._sequence_window,
@@ -629,6 +643,20 @@ class DataProcessor():
                 data  = peak_normalization(data)
             if self._normalization_technique == 'peakZ':
                 data  = Z_normalization(peak_normalization(data))
+
+        #---Differentiation (temporal gradient along pulse/slow-time axis)
+        if self._differentiation_flag:
+            # Apply differentiation along the pulse axis (axis=2)
+            for _ in range(self._differentiation_order):
+                if self._differentiation_method == 'gradient':
+                    # Central differences, preserves array length
+                    data = np.gradient(data, axis=2)
+                elif self._differentiation_method == 'diff':
+                    # Forward differences, reduces length by 1
+                    data = np.diff(data, axis=2)
+                else:
+                    raise ValueError(f"Unknown differentiation method: {self._differentiation_method}")
+            logger.info(f"Applied {self._differentiation_order}-order differentiation ({self._differentiation_method}) along pulse axis")
 
         return data
 
@@ -934,6 +962,7 @@ class DataProcessor():
             'envelope': self._envelope_flag,
             'logcompression': self._logcompression_flag,
             'normalization': self._normalization_technique if self._normalization_flag else None,
+            'differentiation': f"{self._differentiation_method}(order={self._differentiation_order})" if self._differentiation_flag else None,
             'decimation_factor': self._decimation_factor if self._decimation_flag else None,
             'label_method': self._label_method,
             'label_axis': self._label_axis,
