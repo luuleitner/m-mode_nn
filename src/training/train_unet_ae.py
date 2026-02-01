@@ -2,7 +2,14 @@
 UNet Autoencoder Training
 
 Training script for UNetAutoencoder with optional classification head.
-Uses config-driven model and adapter selection.
+Uses unified loss functions: reconstruction (unweighted) + classification (weighted).
+
+Features:
+- Joint reconstruction + classification loss
+- Class-weighted classification (reconstruction never weighted)
+- Per-class metrics tracking
+- Soft label support
+- Early stopping on balanced accuracy
 
 Usage:
     python -m src.training.train_unet_ae --config config/config.yaml
@@ -18,6 +25,7 @@ from datetime import datetime
 
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,6 +45,105 @@ from src.training.callbacks import (
 
 import utils.logging_config as logconf
 logger = logconf.get_logger("TRAIN")
+
+# Load class names from centralized config
+_label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
+with open(_label_config_path) as _f:
+    _label_config = yaml.safe_load(_f)
+_classes_config = _label_config.get('classes', {})
+CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(_classes_config.get('num_classes', 3))]
+
+
+def compute_class_weights(train_loader, num_classes, config, device):
+    """
+    Compute class weights from training data distribution.
+
+    Mirrors CNN classifier's implementation with multiple methods:
+    - inverse_frequency: standard total / (n_classes * count)
+    - effective_samples: Class-Balanced Loss (Cui et al., 2019)
+    - sqrt_inverse: gentler weighting
+    - custom: user-defined weights
+
+    Args:
+        train_loader: Training data loader
+        num_classes: Number of classes
+        config: Configuration object
+        device: Torch device
+
+    Returns:
+        dict: {class_idx: weight} or None if disabled
+    """
+    # Get imbalance config
+    train_cfg = config.ml.training
+    imbalance_cfg = train_cfg.get('imbalance', None) if hasattr(train_cfg, 'get') else getattr(train_cfg, 'imbalance', None)
+
+    if not imbalance_cfg:
+        return None
+
+    weights_cfg = imbalance_cfg.get('class_weights', None) if hasattr(imbalance_cfg, 'get') else getattr(imbalance_cfg, 'class_weights', None)
+    if not weights_cfg:
+        return None
+
+    enabled = weights_cfg.get('enabled', False) if hasattr(weights_cfg, 'get') else getattr(weights_cfg, 'enabled', False)
+    if not enabled:
+        return None
+
+    method = weights_cfg.get('method', 'inverse_frequency') if hasattr(weights_cfg, 'get') else getattr(weights_cfg, 'method', 'inverse_frequency')
+    power = weights_cfg.get('power', 1.0) if hasattr(weights_cfg, 'get') else getattr(weights_cfg, 'power', 1.0)
+    custom_weights = weights_cfg.get('custom_weights', None) if hasattr(weights_cfg, 'get') else getattr(weights_cfg, 'custom_weights', None)
+
+    logger.info(f"Computing class weights (method={method}, power={power})...")
+
+    # Count classes
+    class_counts = torch.zeros(num_classes)
+    for batch in tqdm(train_loader, desc="Counting classes"):
+        if isinstance(batch, dict):
+            labels = batch['labels']
+        else:
+            labels = batch[1]
+
+        # Handle soft labels
+        if labels.dim() > 1 and labels.shape[-1] > 1:
+            hard_labels = labels.argmax(dim=-1)
+        else:
+            hard_labels = labels.squeeze() if labels.dim() > 1 else labels
+
+        for cls in range(num_classes):
+            class_counts[cls] += (hard_labels == cls).sum().item()
+
+    total = class_counts.sum()
+    n_classes = len(class_counts)
+    max_ratio = class_counts.max() / (class_counts.min() + 1e-6)
+
+    # Compute weights based on method
+    if method == "custom" and custom_weights is not None:
+        weights = torch.tensor(custom_weights, dtype=torch.float32)
+        logger.info(f"Using custom weights: {custom_weights}")
+    elif method == "effective_samples":
+        beta = 0.999
+        effective_num = 1.0 - torch.pow(beta, class_counts)
+        weights = (1.0 - beta) / (effective_num + 1e-6)
+        logger.info(f"Using effective_samples method (β={beta})")
+    elif method == "sqrt_inverse":
+        weights = torch.sqrt(total / (class_counts + 1e-6))
+        logger.info("Using sqrt_inverse method")
+    else:  # inverse_frequency
+        weights = total / (n_classes * class_counts + 1e-6)
+        logger.info("Using inverse_frequency method")
+
+    # Apply power scaling
+    if power != 1.0:
+        weights = weights ** power
+        logger.info(f"Applied power scaling: {power}")
+
+    # Normalize (average weight = 1)
+    weights = weights / weights.sum() * n_classes
+
+    logger.info(f"Class distribution: {class_counts.long().tolist()} (max/min ratio: {max_ratio:.1f})")
+    logger.info(f"Class weights: {[f'{w:.3f}' for w in weights.tolist()]}")
+
+    # Return as dict for compatibility
+    return {i: weights[i].item() for i in range(num_classes)}
 
 
 def create_model(config):
@@ -95,8 +202,8 @@ def create_adapter(config):
         raise ValueError(f"No adapter for model type: {model_type}")
 
 
-def create_callbacks(config, results_dir, test_loader=None):
-    """Create training callbacks."""
+def create_callbacks(config, results_dir, test_loader=None, num_classes=0):
+    """Create training callbacks with enhanced WandB logging."""
     callbacks = []
 
     # Checkpoint callback
@@ -109,7 +216,7 @@ def create_callbacks(config, results_dir, test_loader=None):
         keep_n_checkpoints=3
     ))
 
-    # Visualization callback
+    # Visualization callback (with GT/Pred/Diff plots)
     validation_config = getattr(config.ml.training, 'validation', None)
     plot_every = getattr(validation_config, 'plot_every_n_epochs', 10) if validation_config else 10
 
@@ -120,8 +227,11 @@ def create_callbacks(config, results_dir, test_loader=None):
     )
     callbacks.append(vis_callback)
 
-    # WandB callback
+    # WandB callback with enhanced logging
     if config.wandb.use_wandb:
+        # Get loss weights for logging
+        loss_weights = config.get_loss_weights()
+
         wandb_config = {
             'model_type': config.ml.model.type,
             'embedding_dim': config.ml.model.embedding_dim,
@@ -129,7 +239,11 @@ def create_callbacks(config, results_dir, test_loader=None):
             'epochs': config.ml.training.epochs,
             'learning_rate': config.ml.training.lr,
             'optimizer': config.ml.training.optimizer.type,
-            'scheduler': config.ml.training.lr_scheduler.type
+            'scheduler': config.ml.training.lr_scheduler.type,
+            'num_classes': num_classes,
+            'mse_weight': loss_weights.get('mse_weight', 0.5),
+            'l1_weight': loss_weights.get('l1_weight', 0.5),
+            'cls_weight': loss_weights.get('classification_weight', 0.0),
         }
 
         callbacks.append(WandBCallback(
@@ -137,7 +251,10 @@ def create_callbacks(config, results_dir, test_loader=None):
             config=wandb_config,
             name=config.wandb.name,
             save_dir=results_dir,
-            api_key=getattr(config.wandb, 'api_key', None)
+            api_key=getattr(config.wandb, 'api_key', None),
+            class_names=CLASS_NAMES[:num_classes] if num_classes > 0 else [],
+            plot_confusion_every=plot_every,
+            log_every_n_batches=10
         ))
 
     # Early stopping callback
@@ -249,13 +366,13 @@ def main(config_path, restart=False):
     # Create model and adapter
     model = create_model(config)
     adapter = create_adapter(config)
+    num_classes = getattr(model, 'num_classes', 0)
 
     # Get results directory
     results_base = config.get_checkpoint_path()
 
-    # Create callbacks
-    # Note: results_dir will be set by trainer with timestamp
-    callbacks = create_callbacks(config, results_base, test_loader)
+    # Create callbacks with class names for WandB
+    callbacks = create_callbacks(config, results_base, test_loader, num_classes=num_classes)
 
     # Create trainer
     trainer = BaseTrainer(
@@ -281,18 +398,20 @@ def main(config_path, restart=False):
     loss_weights = config.get_loss_weights()
     regularization = config.get_regularization_config()
 
-    # Add class weights for weighted loss if enabled
-    balancing_config = getattr(config.ml.training, 'class_balancing', None)
-    use_weighted_loss = (
-        balancing_config is not None and
-        getattr(balancing_config, 'enabled', False) and
-        getattr(balancing_config, 'method', '') in ['weighted_loss', 'both']
-    )
+    # Rename classification_weight to cls_weight for unified interface
+    if 'classification_weight' in loss_weights:
+        loss_weights['cls_weight'] = loss_weights.pop('classification_weight')
 
-    if use_weighted_loss:
-        class_weights = train_ds.get_class_weights()
-        loss_weights['class_weights'] = class_weights
-        logger.info(f"Using weighted loss with class weights: {class_weights}")
+    # Determine num_classes from model
+    num_classes = getattr(model, 'num_classes', 0)
+    if num_classes > 0:
+        trainer.num_classes = num_classes
+
+        # Compute class weights using CNN-style computation
+        class_weights_dict = compute_class_weights(train_loader, num_classes, config, trainer.device)
+        if class_weights_dict:
+            trainer.set_class_weights(class_weights_dict, num_classes)
+            logger.info(f"Using class-weighted classification loss")
 
     # Train
     try:
@@ -311,7 +430,7 @@ def main(config_path, restart=False):
 
         # Final evaluation
         logger.info("Running final evaluation...")
-        test_metrics = trainer.evaluate(test_loader)
+        test_metrics = trainer.evaluate(test_loader, loss_weights=loss_weights)
 
         # Print summary
         print_summary(history, test_metrics, trainer.results_dir)
@@ -334,15 +453,26 @@ def print_summary(history, test_metrics, results_dir):
     print(f"Final Val Loss:   {history['val_loss'][-1]:.6f}")
     print(f"Final Val MSE:    {history['val_mse'][-1]:.6f}")
     print(f"Test MSE:         {test_metrics['test_mse']:.6f}")
-    print(f"Test MAE:         {test_metrics['test_mae']:.6f}")
+    print(f"Test Loss:        {test_metrics.get('test_loss', 0):.6f}")
 
     # Print classification accuracy if available
-    if 'val_accuracy' in history:
+    if 'val_accuracy' in history and history['val_accuracy']:
         print(f"Final Val Acc:    {history['val_accuracy'][-1]:.2%}")
+    if 'val_balanced_accuracy' in history and history['val_balanced_accuracy']:
+        print(f"Final Val BalAcc: {history['val_balanced_accuracy'][-1]:.2%}")
     if 'test_accuracy' in test_metrics:
         print(f"Test Accuracy:    {test_metrics['test_accuracy']:.2%}")
+    if 'test_balanced_accuracy' in test_metrics:
+        print(f"Test Balanced:    {test_metrics['test_balanced_accuracy']:.2%}")
 
-    print(f"Total Epochs:     {len(history['train_loss'])}")
+    # Per-class test accuracy
+    if 'per_class_accuracy' in test_metrics:
+        print("\nPer-class Test Accuracy:")
+        for cls, acc in test_metrics['per_class_accuracy'].items():
+            cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class {cls}"
+            print(f"  {cls_name}: {acc:.2%}")
+
+    print(f"\nTotal Epochs:     {len(history['train_loss'])}")
     print(f"Results saved to: {results_dir}")
     print("=" * 60)
 

@@ -2,10 +2,11 @@
 Precompute K-Fold Cross-Validation Dataset Splits
 
 Creates multiple fold directories, each containing train/val/test pickle files.
-Supports three CV strategies:
+Supports four CV strategies:
   - experiment_kfold: K-fold over experiments within participant(s)
   - session_loso: Leave-One-Session-Out
-  - participant_lopo: Leave-One-Participant-Out
+  - participant_lopo: Leave-One-Participant-Out (cross-subject generalization)
+  - participant_within: Within-participant modeling (subject-specific, no cross-subject)
 
 Usage:
     python -m src.data.precompute_kfolds --config config/config.yaml
@@ -242,6 +243,98 @@ def create_participant_lopo_splits(config, metadata_df, cv_config, base_params):
     return folds
 
 
+def create_participant_within_splits(config, metadata_df, cv_config, base_params):
+    """
+    Create within-participant splits (subject-specific modeling).
+
+    Each fold uses ONE participant's data for train/val/test.
+    This tests subject-specific performance rather than cross-subject generalization.
+
+    Use cases:
+    - Personalized models per subject
+    - Identify which subjects are easier/harder to classify
+    - Debug data quality issues per subject
+    - Establish upper bound before cross-subject generalization
+    """
+    strategy_config = cv_config.get('participant_within', {})
+    participant_filter = strategy_config.get('participant_filter')
+    train_ratio = strategy_config.get('train_ratio', 0.7)
+    test_val_split_ratio = strategy_config.get('test_val_split_ratio', 0.5)
+
+    # Get participants to create folds for
+    available_participants = sorted(metadata_df['participant'].unique().tolist())
+
+    # Handle participant_filter: null, "all", or list of IDs
+    if participant_filter is None or participant_filter == 'all':
+        participants = available_participants
+    elif isinstance(participant_filter, list):
+        participants = [p for p in participant_filter if p in available_participants]
+        if not participants:
+            raise ValueError(f"No participants from {participant_filter} found. Available: {available_participants}")
+    else:
+        # Single participant ID
+        if participant_filter in available_participants:
+            participants = [participant_filter]
+        else:
+            raise ValueError(f"Participant {participant_filter} not found. Available: {available_participants}")
+
+    n_participants = len(participants)
+    logger.info(f"Creating {n_participants}-fold within-participant CV")
+    logger.info(f"Each fold trains/val/tests on ONE participant's data independently")
+    logger.info(f"Participants: {participants}")
+    logger.info(f"Train ratio: {train_ratio:.0%}, Val/Test split: {test_val_split_ratio:.0%}/{1-test_val_split_ratio:.0%}")
+
+    folds = []
+    for fold_idx, participant in enumerate(participants):
+        # Get this participant's experiments
+        participant_df = metadata_df[metadata_df['participant'] == participant]
+        participant_experiments = sorted(participant_df['file_path'].unique().tolist())
+        n_experiments = len(participant_experiments)
+
+        if n_experiments < 3:
+            logger.warning(f"Participant {participant} has only {n_experiments} experiments, "
+                          f"may not have enough data for meaningful train/val/test split")
+
+        # Calculate split sizes
+        n_train = max(1, int(n_experiments * train_ratio))
+        n_test_val = n_experiments - n_train
+
+        # Shuffle experiments for this participant (deterministic based on seed)
+        rng = np.random.RandomState(base_params.get('random_seed', 42) + fold_idx)
+        shuffled_experiments = rng.permutation(participant_experiments).tolist()
+
+        train_experiments = shuffled_experiments[:n_train]
+        test_val_experiments = shuffled_experiments[n_train:]
+
+        fold_info = {
+            'fold_idx': fold_idx,
+            'strategy': 'participant_within',
+            'n_folds': n_participants,
+            'participant': int(participant),  # The participant for this fold
+            'n_experiments': n_experiments,
+            'train_experiments': train_experiments,
+            'test_val_experiments': test_val_experiments,
+            'train_ratio': train_ratio,
+            'test_val_split_ratio': test_val_split_ratio,
+        }
+
+        # Create dataset parameters for this fold
+        # Key: global_participant_filter restricts to this ONE participant
+        # test_val_experiment_filter holds out some of their experiments for val/test
+        fold_params = base_params.copy()
+        fold_params['test_val_strategy'] = 'filter'
+        fold_params['test_val_experiment_filter'] = test_val_experiments
+        fold_params['test_val_split_ratio'] = test_val_split_ratio
+        fold_params['global_participant_filter'] = [participant]  # Only this participant!
+
+        logger.info(f"  Participant {participant}: {n_experiments} exp -> "
+                   f"{len(train_experiments)} train, {len(test_val_experiments)} test/val")
+
+        folds.append((fold_info, fold_params))
+
+    return folds
+
+
 def save_fold(fold_dir, train_ds, val_ds, test_ds, fold_info):
     """Save a single fold's datasets and info."""
     os.makedirs(fold_dir, exist_ok=True)
@@ -365,6 +458,8 @@ def precompute_kfolds(config_path, strategy=None, n_folds=None, force=False):
         folds = create_session_loso_splits(config, metadata_df, cv_config, base_params)
     elif cv_strategy == 'participant_lopo':
         folds = create_participant_lopo_splits(config, metadata_df, cv_config, base_params)
+    elif cv_strategy == 'participant_within':
+        folds = create_participant_within_splits(config, metadata_df, cv_config, base_params)
     else:
         logger.error(f"Unknown CV strategy: {cv_strategy}")
         return False
@@ -403,6 +498,8 @@ def precompute_kfolds(config_path, strategy=None, n_folds=None, force=False):
             logger.info(f"Holdout session: {fold_info['holdout_session']}")
         elif cv_strategy == 'participant_lopo':
             logger.info(f"Holdout participant: {fold_info['holdout_participant']}")
+        elif cv_strategy == 'participant_within':
+            logger.info(f"Participant: {fold_info['participant']} ({fold_info['n_experiments']} experiments)")
 
         try:
             # Create datasets for this fold
@@ -475,7 +572,7 @@ Examples:
     parser.add_argument(
         '--strategy', '-s',
         type=str,
-        choices=['experiment_kfold', 'session_loso', 'participant_lopo'],
+        choices=['experiment_kfold', 'session_loso', 'participant_lopo', 'participant_within'],
         default=None,
         help='CV strategy (overrides config)'
     )

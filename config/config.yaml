@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window15_Stride05_Labels_soft/run_20260131_142714"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window15_Stride05_Labels_soft/run_20260201_015715"
 
 
 # ========================================
@@ -29,8 +29,8 @@ preprocess:
   data:
     basepath: *base_data_path
     id: "Dataset_Envelope_CNN"
-    strategy: "selection_file"                   # all | selection_file
-    selection_file:  "/vol/data/2026_wristus_wiicontroller_sgambato/day002/raw/selection_20260129_202647_P000.csv"              # Used when strategy=selection_file (run utils/generate_selection.py)
+    strategy: "all"                   # all | selection_file
+    selection_file: null              # Used when strategy=selection_file (run utils/generate_selection.py)
     save_ftype: "h5"                  # h5, zarr
 
   signal:
@@ -73,6 +73,15 @@ preprocess:
     normalization:
       apply: true
       method: "peak"
+
+    # Temporal differentiation (gradient along pulse/slow-time axis)
+    differentiation:
+      apply: true                  # Set to true to use differentiated signal
+      method: "gradient"            # gradient | diff
+                                    # gradient: np.gradient (central differences, same length)
+                                    # diff: np.diff (forward differences, length-1)
+      order: 1                      # 1 = first derivative (velocity)
+                                    # 2 = second derivative (acceleration)
 
   tokenization:
     tokens2file: true
@@ -288,7 +297,7 @@ ml:
       batch_norm: true               # Use batch normalization
       dropout:
         spatial: 0.2                 # Dropout2d between conv blocks (0.1-0.2 recommended)
-        fc: 0.3                    # Dropout in FC classifier head (0.3-0.5 recommended)
+        fc: 0.4                    # Dropout in FC classifier head (0.3-0.5 recommended)
 
     # Class Imbalance Handling
     imbalance:
@@ -315,7 +324,7 @@ ml:
         #   - power < 1.0: Use when minority classes have noisy labels or you want smoother training
         #   - power = 1.0: Standard choice, theoretically optimal for clean labels
         #   - power > 1.0: Use when minority classes are critical and you accept some majority degradation
-        power: 1.0
+        power: 1.1
 
         # Custom weights (only used when method="custom")
         # Order: [Noise, Up, Down, Left, Right]
@@ -362,8 +371,9 @@ cross_validation:
   # Options:
   #   - "experiment_kfold": K-fold over experiments within selected participant(s)
   #   - "session_loso":     Leave-One-Session-Out
-  #   - "participant_lopo": Leave-One-Participant-Out
-  strategy: "experiment_kfold"
+  #   - "participant_lopo":   Leave-One-Participant-Out (cross-subject generalization)
+  #   - "participant_within": Within-participant modeling (subject-specific, no cross-subject)
+  strategy: "participant_within"
 
   # =========================================
   # STRATEGY 1: experiment_kfold
@@ -404,6 +414,29 @@ cross_validation:
   participant_lopo:
     participant_filter: null            # Which participants to fold over (null=all)
     test_val_split_ratio: 0.5           # Within holdout participant: 50% test, 50% val
+
+  # =========================================
+  # STRATEGY 4: participant_within
+  # =========================================
+  # Within-participant cross-validation (subject-specific modeling).
+  # Each fold trains/val/tests on ONE participant's data independently.
+  #
+  # Use cases:
+  #   - Personalized models per subject
+  #   - Identify which subjects are easier/harder to classify
+  #   - Debug data quality issues per subject
+  #   - Establish upper bound before attempting cross-subject generalization
+  #
+  # Example: 4 participants → 4 folds
+  #   Fold 0: Train/val/test on Participant 1's data only
+  #   Fold 1: Train/val/test on Participant 2's data only
+  #   ...
+  #   Aggregated: Compare performance across participants
+  #
+  participant_within:
+    participant_filter: all            # "all", null, single ID, or list of IDs [0, 1, 2]
+    train_ratio: 0.8                   # 80% of each participant's experiments for training
+    test_val_split_ratio: 0.5          # Of remaining 20%: 50% val, 50% test
 
 
 # ========================================
