@@ -3,6 +3,7 @@ Visualization Callback - Training curves, reconstruction, and confusion matrix v
 """
 
 import os
+import yaml
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -23,22 +24,42 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
 
+# Load class config from centralized label config
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_label_config_path = os.path.join(_project_root, 'preprocessing/label_logic/label_config.yaml')
+try:
+    with open(_label_config_path) as _f:
+        _label_config = yaml.safe_load(_f)
+    _classes_config = _label_config.get('classes', {})
+    _INCLUDE_NOISE = _classes_config.get('include_noise', True)
+    _DEFAULT_NUM_CLASSES = 5 if _INCLUDE_NOISE else 4
+    # When noise excluded, labels are remapped 1,2,3,4 → 0,1,2,3
+    if _INCLUDE_NOISE:
+        _DEFAULT_CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(5)]
+    else:
+        _DEFAULT_CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(1, 5)]
+except Exception:
+    _DEFAULT_NUM_CLASSES = 4
+    _DEFAULT_CLASS_NAMES = ['Up', 'Down', 'Left', 'Right']
+
 
 class VisualizationCallback(Callback):
     """Generates visualizations during training."""
 
-    def __init__(self, save_dir, plot_every_n_epochs=1, test_loader=None, log_to_wandb=True):
+    def __init__(self, save_dir, plot_every_n_epochs=1, test_loader=None, log_to_wandb=True, class_names=None):
         """
         Args:
             save_dir: Directory to save plots
             plot_every_n_epochs: Generate plots every N epochs (default: 1 = every epoch)
             test_loader: Optional test data loader for reconstruction plots
             log_to_wandb: Log plots to WandB if available
+            class_names: List of class names for confusion matrix labels (default: from label_config)
         """
         self.save_dir = save_dir
         self.plot_every_n_epochs = plot_every_n_epochs
         self.test_loader = test_loader
         self.log_to_wandb = log_to_wandb and WANDB_AVAILABLE
+        self.class_names = class_names if class_names is not None else _DEFAULT_CLASS_NAMES
         os.makedirs(save_dir, exist_ok=True)
 
     def set_test_loader(self, test_loader):
@@ -308,7 +329,7 @@ class VisualizationCallback(Callback):
             return
 
         try:
-            num_classes = self.trainer.num_classes if hasattr(self.trainer, 'num_classes') else 3
+            num_classes = self.trainer.num_classes if hasattr(self.trainer, 'num_classes') else _DEFAULT_NUM_CLASSES
             if num_classes is None or num_classes == 0:
                 return
 
@@ -322,11 +343,14 @@ class VisualizationCallback(Callback):
             im = ax.imshow(cm_norm, interpolation='nearest', cmap='Blues')
             ax.figure.colorbar(im, ax=ax)
 
+            # Use class names for labels
+            class_labels = [self.class_names[i] if i < len(self.class_names) else f'Class {i}'
+                           for i in range(num_classes)]
             ax.set(
                 xticks=np.arange(num_classes),
                 yticks=np.arange(num_classes),
-                xticklabels=[f'Class {i}' for i in range(num_classes)],
-                yticklabels=[f'Class {i}' for i in range(num_classes)],
+                xticklabels=class_labels,
+                yticklabels=class_labels,
                 ylabel='True Label',
                 xlabel='Predicted Label',
                 title=f'{split.capitalize()} Confusion Matrix - Epoch {epoch+1} (Acc: {accuracy:.1%})'

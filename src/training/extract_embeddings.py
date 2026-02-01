@@ -44,7 +44,8 @@ def create_model(config):
         label_config_path = os.path.join(project_root, 'preprocessing/label_logic/label_config.yaml')
         with open(label_config_path) as f:
             label_config = yaml.safe_load(f)
-        num_classes = label_config['classes']['num_classes']
+        include_noise = label_config['classes'].get('include_noise', True)
+        num_classes = 5 if include_noise else 4
     else:
         num_classes = 0
 

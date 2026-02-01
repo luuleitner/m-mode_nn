@@ -6,6 +6,7 @@ matching the CNN classifier's logging capabilities.
 """
 
 import os
+import yaml
 import numpy as np
 from .base_callback import Callback
 
@@ -27,6 +28,24 @@ try:
     PLOTTING_AVAILABLE = True
 except ImportError:
     PLOTTING_AVAILABLE = False
+
+# Load class config from centralized label config
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_label_config_path = os.path.join(_project_root, 'preprocessing/label_logic/label_config.yaml')
+try:
+    with open(_label_config_path) as _f:
+        _label_config = yaml.safe_load(_f)
+    _classes_config = _label_config.get('classes', {})
+    _INCLUDE_NOISE = _classes_config.get('include_noise', True)
+    _DEFAULT_NUM_CLASSES = 5 if _INCLUDE_NOISE else 4
+    # When noise excluded, labels are remapped 1,2,3,4 → 0,1,2,3
+    if _INCLUDE_NOISE:
+        _DEFAULT_CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(5)]
+    else:
+        _DEFAULT_CLASS_NAMES = [_classes_config['names'].get(i, f'class_{i}') for i in range(1, 5)]
+except Exception:
+    _DEFAULT_NUM_CLASSES = 4
+    _DEFAULT_CLASS_NAMES = ['Up', 'Down', 'Left', 'Right']
 
 
 class WandBCallback(Callback):
@@ -51,7 +70,7 @@ class WandBCallback(Callback):
         self.log_every_n_batches = log_every_n_batches
         self.watch_model = watch_model
         self.api_key = api_key
-        self.class_names = class_names or []
+        self.class_names = class_names if class_names is not None else _DEFAULT_CLASS_NAMES
         self.plot_confusion_every = plot_confusion_every
 
         self.enabled = WANDB_AVAILABLE
@@ -237,7 +256,7 @@ class WandBCallback(Callback):
             return
 
         try:
-            num_classes = self.trainer.num_classes if hasattr(self.trainer, 'num_classes') else 3
+            num_classes = self.trainer.num_classes if hasattr(self.trainer, 'num_classes') else _DEFAULT_NUM_CLASSES
             cm = confusion_matrix(labels, predictions, labels=range(num_classes))
             cm_norm = cm.astype('float') / (cm.sum(axis=1, keepdims=True) + 1e-6)
 
