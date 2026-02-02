@@ -220,8 +220,8 @@ ml:
   # =====================================================================
   model:
     type: "UNetAutoencoder"           # "CNNAutoencoder", "UNetAutoencoder", "TransformerAutoencoder"
-    channels_per_layer: [32, 64, 128]       # 3 levels (preserves temporal dim=2 at bottleneck)
-    embedding_dim: 512                # Less aggressive compression
+    channels_per_layer: [16, 32, 64]       # 3 levels (preserves temporal dim=2 at bottleneck)
+    embedding_dim: 128                # Less aggressive compression
     num_heads: 8                   # For transformer models
     num_layers: 4                  # For transformer models
 
@@ -301,7 +301,7 @@ ml:
       batch_norm: true               # Use batch normalization
       dropout:
         spatial: 0.2                 # Dropout2d between conv blocks (0.1-0.2 recommended)
-        fc: 0.4                    # Dropout in FC classifier head (0.3-0.5 recommended)
+        fc: 0.6            # Dropout in FC classifier head (0.3-0.5 recommended)
 
     # Class Imbalance Handling
     imbalance:
