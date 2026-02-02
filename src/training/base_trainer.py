@@ -32,7 +32,19 @@ class BaseTrainer:
     Uses adapters for model-specific data handling and callbacks for hooks.
     """
 
-    def __init__(self, model, adapter, callbacks=None, device='cuda', results_dir='results'):
+    def __init__(self, model, adapter, callbacks=None, device='cuda', results_dir='results',
+                 create_subdir=True):
+        """
+        Initialize trainer.
+
+        Args:
+            model: PyTorch model
+            adapter: Data adapter for batch preparation
+            callbacks: List of callbacks
+            device: Device to use ('cuda' or 'cpu')
+            results_dir: Base directory for results
+            create_subdir: If True, create timestamped subdirectory. Set False for CV folds.
+        """
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.model = model.to(self.device)
         self.adapter = adapter
@@ -41,9 +53,12 @@ class BaseTrainer:
         self.callbacks = CallbackList(callbacks or [])
         self.callbacks.set_trainer(self)
 
-        # Timestamped results directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.results_dir = os.path.join(results_dir, f'training_{timestamp}')
+        # Results directory - optionally create timestamped subdirectory
+        if create_subdir:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.results_dir = os.path.join(results_dir, f'training_{timestamp}')
+        else:
+            self.results_dir = results_dir
         os.makedirs(self.results_dir, exist_ok=True)
 
         # Training state

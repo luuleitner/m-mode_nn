@@ -442,6 +442,31 @@ def main(config_path, restart=False):
         logger.info("Running final evaluation...")
         test_metrics = trainer.evaluate(test_loader, loss_weights=loss_weights)
 
+        # Plot test confusion matrix (must be done AFTER evaluate() sets _last_test_*)
+        test_preds = getattr(trainer, '_last_test_predictions', None)
+        test_labels = getattr(trainer, '_last_test_labels', None)
+        if test_preds is not None and test_labels is not None:
+            final_epoch = len(history['train_loss']) - 1
+            for cb in trainer.callbacks.callbacks:
+                # Local visualization callback
+                if isinstance(cb, VisualizationCallback):
+                    cb._plot_single_confusion_matrix(
+                        epoch=final_epoch,
+                        predictions=test_preds,
+                        labels=test_labels,
+                        split='test',
+                        prefix='final_'
+                    )
+                # WandB callback
+                if isinstance(cb, WandBCallback) and cb.enabled:
+                    cb._plot_confusion_matrix(
+                        epoch=final_epoch,
+                        predictions=test_preds,
+                        labels=test_labels,
+                        split='test'
+                    )
+            logger.info("Test confusion matrix saved")
+
         # Print summary
         print_summary(history, test_metrics, trainer.results_dir)
 
