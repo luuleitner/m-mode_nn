@@ -104,6 +104,17 @@ class DataProcessor():
             self._differentiation_method = 'gradient'
             self._differentiation_order = 1
 
+        #---Percentile Clipping (clip outliers to Nth percentile)
+        pclip_cfg = getattr(self._config.preprocess.signal, 'percentile_clip', None)
+        if pclip_cfg is not None:
+            self._percentile_clip_flag = getattr(pclip_cfg, 'apply', False)
+            self._percentile_clip_value = getattr(pclip_cfg, 'percentile', 99)
+            self._percentile_clip_symmetric = getattr(pclip_cfg, 'symmetric', True)
+        else:
+            self._percentile_clip_flag = False
+            self._percentile_clip_value = 99
+            self._percentile_clip_symmetric = True
+
         # Tokens
         self._token_window = self._config.preprocess.tokenization.window
         self._token_stride = self._config.preprocess.tokenization.stride
@@ -348,6 +359,9 @@ class DataProcessor():
                 'differentiation_flag': self._differentiation_flag,
                 'differentiation_method': self._differentiation_method,
                 'differentiation_order': self._differentiation_order,
+                'percentile_clip_flag': self._percentile_clip_flag,
+                'percentile_clip_value': self._percentile_clip_value,
+                'percentile_clip_symmetric': self._percentile_clip_symmetric,
                 'token_window': self._token_window,
                 'token_stride': self._token_stride,
                 'sequence_window': self._sequence_window,
@@ -666,6 +680,19 @@ class DataProcessor():
                     raise ValueError(f"Unknown differentiation method: {self._differentiation_method}")
             logger.info(f"Applied {self._differentiation_order}-order differentiation ({self._differentiation_method}) along pulse axis")
 
+        #---Percentile Clipping (clip outliers to Nth percentile)
+        if self._percentile_clip_flag:
+            if self._percentile_clip_symmetric:
+                # Symmetric: clip to [-threshold, +threshold] based on absolute values
+                threshold = np.percentile(np.abs(data), self._percentile_clip_value)
+                data = np.clip(data, -threshold, threshold)
+            else:
+                # Asymmetric: clip positive and negative values independently
+                upper = np.percentile(data, self._percentile_clip_value)
+                lower = np.percentile(data, 100 - self._percentile_clip_value)
+                data = np.clip(data, lower, upper)
+            logger.info(f"Applied percentile clipping at {self._percentile_clip_value}th percentile (symmetric={self._percentile_clip_symmetric})")
+
         return data
 
 
@@ -971,6 +998,7 @@ class DataProcessor():
             'logcompression': self._logcompression_flag,
             'normalization': self._normalization_technique if self._normalization_flag else None,
             'differentiation': f"{self._differentiation_method}(order={self._differentiation_order})" if self._differentiation_flag else None,
+            'percentile_clip': f"p{self._percentile_clip_value}" if self._percentile_clip_flag else None,
             'decimation_factor': self._decimation_factor if self._decimation_flag else None,
             'label_method': self._label_method,
             'label_axis': self._label_axis,

@@ -11,7 +11,7 @@ classes:
   # Noise class toggle:
   #   true  = 5 classes (Noise, Up, Down, Left, Right) - labels 0-4
   #   false = 4 classes (Up, Down, Left, Right) - noise filtered, labels remapped to 0-3
-  include_noise: false
+  include_noise: true
 
   noise_class: 0              # Index of noise/neutral class (when included)
 
