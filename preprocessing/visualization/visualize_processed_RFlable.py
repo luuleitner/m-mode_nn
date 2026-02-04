@@ -8,13 +8,26 @@ Each row contains:
 - US channel heatmap (primary)
 - Joystick position trace (secondary y-axis)
 - Joystick derivative trace (secondary y-axis)
-- 5-class label regions (colored rectangles)
+- 5-class label regions (colored rectangles, optional)
+
+Colorscale Notes:
+- Non-differentiated data: Grayscale, auto-scaled
+- Differentiated data: Diverging RdBu_r (blue=negative, white=zero, red=positive)
+  Uses 99th percentile for color range to enhance contrast by clipping outliers.
+  Extreme values saturate to the colorscale limits rather than washing out the image.
 
 Usage:
-    python visualization/visualize_processed_with_labels.py
-    python visualization/visualize_processed_with_labels.py --seed 42
-    python visualization/visualize_processed_with_labels.py --exp-path /path/to/experiment
-    python visualization/visualize_processed_with_labels.py --config config/config.yaml
+    python visualization/visualize_processed_RFlable.py
+    python visualization/visualize_processed_RFlable.py --seed 42
+    python visualization/visualize_processed_RFlable.py --exp-path /path/to/experiment
+    python visualization/visualize_processed_RFlable.py --config config/config.yaml
+    python visualization/visualize_processed_RFlable.py --no-labels  # hide label rectangles
+
+Arguments:
+    --config    : Path to config file (default: config/config.yaml)
+    --seed      : Random seed for experiment selection
+    --exp-path  : Specific experiment path (overrides random selection)
+    --no-labels : Hide label region rectangles (labels shown by default)
 """
 
 import os
@@ -120,7 +133,7 @@ def add_label_regions(fig, labels, row, col, y_max, show_noise=True):
             )
 
 
-def create_visualization(exp_path, data):
+def create_visualization(exp_path, data, show_labels=True):
     """
     Create visualization with 6 rows (single column):
     - For each US channel (0, 1, 2):
@@ -185,8 +198,10 @@ def create_visualization(exp_path, data):
     if is_diff:
         # Diverging colorscale for differentiated data (blue=negative, white=zero, red=positive)
         us_colorscale = 'RdBu_r'
-        # Compute symmetric color range centered at zero
-        diff_max = np.abs(processed_us).max()
+        # Use 99th percentile for color range to enhance contrast by clipping outliers.
+        # This prevents extreme values from compressing the colorscale and washing out
+        # the visualization. Outlier values simply saturate to the colorscale limits.
+        diff_max = np.percentile(np.abs(processed_us), 90)
         us_zmin, us_zmax, us_zmid = -diff_max, diff_max, 0
         colorbar_title = 'dUS/dt'
     else:
@@ -212,7 +227,8 @@ def create_visualization(exp_path, data):
         fig.add_trace(go.Heatmap(**heatmap_kwargs), row=row_x, col=1)
 
         # Add label regions (respects include_noise setting)
-        add_label_regions(fig, labels, row_x, 1, depth, show_noise=_INCLUDE_NOISE)
+        if show_labels:
+            add_label_regions(fig, labels, row_x, 1, depth, show_noise=_INCLUDE_NOISE)
 
         # Joystick X position (secondary y-axis)
         fig.add_trace(
@@ -261,7 +277,8 @@ def create_visualization(exp_path, data):
         fig.add_trace(go.Heatmap(**heatmap_kwargs_y), row=row_y, col=1)
 
         # Add label regions (respects include_noise setting)
-        add_label_regions(fig, labels, row_y, 1, depth, show_noise=_INCLUDE_NOISE)
+        if show_labels:
+            add_label_regions(fig, labels, row_y, 1, depth, show_noise=_INCLUDE_NOISE)
 
         # Joystick Y position (secondary y-axis)
         fig.add_trace(
@@ -371,6 +388,8 @@ def main():
                         help='Random seed for experiment selection')
     parser.add_argument('--exp-path', type=str, default=None,
                         help='Specific experiment path (overrides random selection)')
+    parser.add_argument('--no-labels', action='store_true',
+                        help='Hide label region rectangles')
     args = parser.parse_args()
 
     # Resolve config path
@@ -412,7 +431,7 @@ def main():
         print(f"  {name:6s}: {count:5d} ({pct:5.1f}%)")
 
     # Create and show visualization
-    fig = create_visualization(exp_path, data)
+    fig = create_visualization(exp_path, data, show_labels=not args.no_labels)
     fig.show()
 
     print("\nVisualization opened in browser")
