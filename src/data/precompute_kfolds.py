@@ -245,21 +245,24 @@ def create_participant_lopo_splits(config, metadata_df, cv_config, base_params):
 
 def create_participant_within_splits(config, metadata_df, cv_config, base_params):
     """
-    Create within-participant splits (subject-specific modeling).
+    Create within-participant splits with optional nested K-fold CV.
 
-    Each fold uses ONE participant's data for train/val/test.
-    This tests subject-specific performance rather than cross-subject generalization.
+    When inner_folds > 1: Creates K folds per participant (nested CV)
+    When inner_folds = 1 or None: Creates single split per participant (legacy behavior)
 
-    Use cases:
-    - Personalized models per subject
-    - Identify which subjects are easier/harder to classify
-    - Debug data quality issues per subject
-    - Establish upper bound before cross-subject generalization
+    This enables:
+    - Robust per-subject performance estimates with uncertainty
+    - Proper variance estimation (intra-subject and inter-subject)
+    - Statistical comparison between subjects
+
+    Output: N_participants × inner_folds total folds
     """
     strategy_config = cv_config.get('participant_within', {})
     participant_filter = strategy_config.get('participant_filter')
-    train_ratio = strategy_config.get('train_ratio', 0.7)
+    inner_folds = strategy_config.get('inner_folds', 1) or 1  # Default to 1 (single split)
     test_val_split_ratio = strategy_config.get('test_val_split_ratio', 0.5)
+    # Legacy support: if train_ratio specified and inner_folds=1, use it
+    train_ratio = strategy_config.get('train_ratio', None)
 
     # Get participants to create folds for
     available_participants = sorted(metadata_df['participant'].unique().tolist())
@@ -279,59 +282,107 @@ def create_participant_within_splits(config, metadata_df, cv_config, base_params
             raise ValueError(f"Participant {participant_filter} not found. Available: {available_participants}")
 
     n_participants = len(participants)
-    logger.info(f"Creating {n_participants}-fold within-participant CV")
-    logger.info(f"Each fold trains/val/tests on ONE participant's data independently")
-    logger.info(f"Participants: {participants}")
-    logger.info(f"Train ratio: {train_ratio:.0%}, Val/Test split: {test_val_split_ratio:.0%}/{1-test_val_split_ratio:.0%}")
+    total_folds = n_participants * inner_folds
+
+    logger.info(f"Creating nested within-participant CV")
+    logger.info(f"  Participants: {n_participants} ({participants})")
+    logger.info(f"  Inner folds per participant: {inner_folds}")
+    logger.info(f"  Total folds: {total_folds}")
+    logger.info(f"  Val/Test split ratio: {test_val_split_ratio:.0%}/{1-test_val_split_ratio:.0%}")
 
     folds = []
-    for fold_idx, participant in enumerate(participants):
+    global_fold_idx = 0
+
+    for participant in participants:
         # Get this participant's experiments
         participant_df = metadata_df[metadata_df['participant'] == participant]
         participant_experiments = sorted(participant_df['file_path'].unique().tolist())
         n_experiments = len(participant_experiments)
 
-        if n_experiments < 3:
+        if n_experiments < inner_folds:
             logger.warning(f"Participant {participant} has only {n_experiments} experiments, "
-                          f"may not have enough data for meaningful train/val/test split")
+                          f"but inner_folds={inner_folds}. Reducing to {n_experiments} folds for this participant.")
+            effective_inner_folds = n_experiments
+        else:
+            effective_inner_folds = inner_folds
 
-        # Calculate split sizes
-        n_train = max(1, int(n_experiments * train_ratio))
-        n_test_val = n_experiments - n_train
+        if effective_inner_folds < 2:
+            logger.warning(f"Participant {participant}: Not enough experiments for K-fold, using single split")
+            effective_inner_folds = 1
 
-        # Shuffle experiments for this participant (deterministic based on seed)
-        rng = np.random.RandomState(base_params.get('random_seed', 42) + fold_idx)
-        shuffled_experiments = rng.permutation(participant_experiments).tolist()
+        logger.info(f"  Participant {participant}: {n_experiments} experiments -> {effective_inner_folds} inner folds")
 
-        train_experiments = shuffled_experiments[:n_train]
-        test_val_experiments = shuffled_experiments[n_train:]
+        if effective_inner_folds == 1:
+            # Single split mode (legacy behavior)
+            if train_ratio is None:
+                train_ratio = 0.8  # Default
 
-        fold_info = {
-            'fold_idx': fold_idx,
-            'strategy': 'participant_within',
-            'n_folds': n_participants,
-            'participant': int(participant),  # The participant for this fold
-            'n_experiments': n_experiments,
-            'train_experiments': train_experiments,
-            'test_val_experiments': test_val_experiments,
-            'train_ratio': train_ratio,
-            'test_val_split_ratio': test_val_split_ratio,
-        }
+            rng = np.random.RandomState(base_params.get('random_seed', 42) + participant)
+            shuffled_experiments = rng.permutation(participant_experiments).tolist()
 
-        # Create dataset parameters for this fold
-        # Key: global_participant_filter restricts to this ONE participant
-        # test_val_experiment_filter holds out some of their experiments for val/test
-        fold_params = base_params.copy()
-        fold_params['test_val_strategy'] = 'filter'
-        fold_params['test_val_experiment_filter'] = test_val_experiments
-        fold_params['test_val_split_ratio'] = test_val_split_ratio
-        fold_params['global_participant_filter'] = [participant]  # Only this participant!
+            n_train = max(1, int(n_experiments * train_ratio))
+            train_experiments = shuffled_experiments[:n_train]
+            test_val_experiments = shuffled_experiments[n_train:]
 
-        logger.info(f"  Participant {participant}: {n_experiments} exp -> "
-                   f"{len(train_experiments)} train, {len(test_val_experiments)} test/val")
+            fold_info = {
+                'fold_idx': global_fold_idx,
+                'strategy': 'participant_within',
+                'participant': int(participant),
+                'inner_fold_idx': 0,
+                'inner_folds': 1,
+                'n_participants': n_participants,
+                'n_experiments': n_experiments,
+                'train_experiments': train_experiments,
+                'test_val_experiments': test_val_experiments,
+                'test_val_split_ratio': test_val_split_ratio,
+            }
 
-        folds.append((fold_info, fold_params))
+            fold_params = base_params.copy()
+            fold_params['test_val_strategy'] = 'filter'
+            fold_params['test_val_experiment_filter'] = test_val_experiments
+            fold_params['test_val_split_ratio'] = test_val_split_ratio
+            fold_params['global_participant_filter'] = [participant]
 
+            folds.append((fold_info, fold_params))
+            global_fold_idx += 1
+
+        else:
+            # K-fold CV within this participant
+            kf = KFold(n_splits=effective_inner_folds, shuffle=True,
+                      random_state=base_params.get('random_seed', 42) + participant)
+
+            experiments_array = np.array(participant_experiments)
+
+            for inner_fold_idx, (train_idx, test_val_idx) in enumerate(kf.split(experiments_array)):
+                train_experiments = experiments_array[train_idx].tolist()
+                test_val_experiments = experiments_array[test_val_idx].tolist()
+
+                fold_info = {
+                    'fold_idx': global_fold_idx,
+                    'strategy': 'participant_within',
+                    'participant': int(participant),
+                    'inner_fold_idx': inner_fold_idx,
+                    'inner_folds': effective_inner_folds,
+                    'n_participants': n_participants,
+                    'n_experiments': n_experiments,
+                    'train_experiments': train_experiments,
+                    'test_val_experiments': test_val_experiments,
+                    'test_val_split_ratio': test_val_split_ratio,
+                }
+
+                fold_params = base_params.copy()
+                fold_params['test_val_strategy'] = 'filter'
+                fold_params['test_val_experiment_filter'] = test_val_experiments
+                fold_params['test_val_split_ratio'] = test_val_split_ratio
+                fold_params['global_participant_filter'] = [participant]
+
+                folds.append((fold_info, fold_params))
+                global_fold_idx += 1
+
+                logger.debug(f"    Inner fold {inner_fold_idx}: {len(train_experiments)} train, "
+                           f"{len(test_val_experiments)} test/val experiments")
+
+    logger.info(f"Created {len(folds)} total folds")
     return folds
 
 
@@ -488,9 +539,18 @@ def precompute_kfolds(config_path, strategy=None, n_folds=None, force=False):
 
     for fold_info, fold_params in folds:
         fold_idx = fold_info['fold_idx']
-        fold_dir = os.path.join(output_dir, f'fold_{fold_idx}')
 
-        logger.info(f"\n--- Fold {fold_idx}/{n_folds_actual - 1} ---")
+        # Create fold directory name based on strategy
+        if cv_strategy == 'participant_within' and fold_info.get('inner_folds', 1) > 1:
+            # Nested CV: P{participant}_fold{inner_fold_idx}
+            fold_dir_name = f"P{fold_info['participant']}_fold{fold_info['inner_fold_idx']}"
+        else:
+            # Standard: fold_{idx}
+            fold_dir_name = f'fold_{fold_idx}'
+
+        fold_dir = os.path.join(output_dir, fold_dir_name)
+
+        logger.info(f"\n--- Fold {fold_idx}/{n_folds_actual - 1} ({fold_dir_name}) ---")
 
         if cv_strategy == 'experiment_kfold':
             logger.info(f"Holdout experiments: {len(fold_info['test_val_experiments'])}")
@@ -499,7 +559,8 @@ def precompute_kfolds(config_path, strategy=None, n_folds=None, force=False):
         elif cv_strategy == 'participant_lopo':
             logger.info(f"Holdout participant: {fold_info['holdout_participant']}")
         elif cv_strategy == 'participant_within':
-            logger.info(f"Participant: {fold_info['participant']} ({fold_info['n_experiments']} experiments)")
+            inner_info = f", inner fold {fold_info.get('inner_fold_idx', 0)}/{fold_info.get('inner_folds', 1)-1}" if fold_info.get('inner_folds', 1) > 1 else ""
+            logger.info(f"Participant: {fold_info['participant']} ({fold_info['n_experiments']} experiments{inner_info})")
 
         try:
             # Create datasets for this fold
