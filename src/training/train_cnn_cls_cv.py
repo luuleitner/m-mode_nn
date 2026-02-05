@@ -728,8 +728,11 @@ Examples:
         list_training_runs(cv_dir)
         return 0
 
-    # Find fold directories
+    # Find fold directories (supports both 'fold_*' and 'P*_fold*' naming)
     fold_dirs = sorted(glob.glob(os.path.join(cv_dir, 'fold_*')))
+    if not fold_dirs:
+        # Try nested CV naming: P{id}_fold{k}
+        fold_dirs = sorted(glob.glob(os.path.join(cv_dir, 'P*_fold*')))
     if not fold_dirs:
         logger.error(f"No fold directories found in {cv_dir}")
         return 1
