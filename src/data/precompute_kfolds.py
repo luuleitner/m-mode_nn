@@ -460,9 +460,10 @@ def precompute_kfolds(config_path, strategy=None, n_folds=None, force=False):
     # Output directory
     output_dir = os.path.join(data_root, output_subdir)
 
-    # Check if folds already exist
+    # Check if folds already exist (recursive glob handles both flat and nested layouts)
     if os.path.exists(output_dir) and not force:
-        existing_folds = [d for d in os.listdir(output_dir) if d.startswith('fold_')]
+        from glob import glob
+        existing_folds = glob(os.path.join(output_dir, '**/fold_info.json'), recursive=True)
         if existing_folds:
             logger.info(f"CV folds already exist at {output_dir}")
             logger.info(f"Found {len(existing_folds)} folds. Use --force to overwrite.")
@@ -541,9 +542,12 @@ def precompute_kfolds(config_path, strategy=None, n_folds=None, force=False):
         fold_idx = fold_info['fold_idx']
 
         # Create fold directory name based on strategy
-        if cv_strategy == 'participant_within' and fold_info.get('inner_folds', 1) > 1:
-            # Nested CV: P{participant}_fold{inner_fold_idx}
-            fold_dir_name = f"P{fold_info['participant']}_fold{fold_info['inner_fold_idx']}"
+        if cv_strategy == 'participant_within':
+            # Nested: P{participant}/fold_{inner_fold_idx}
+            fold_dir_name = os.path.join(
+                f"P{fold_info['participant']}",
+                f"fold_{fold_info.get('inner_fold_idx', 0)}"
+            )
         else:
             # Standard: fold_{idx}
             fold_dir_name = f'fold_{fold_idx}'

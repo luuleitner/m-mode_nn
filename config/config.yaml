@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window25_Stride05_Labels_soft/run_20260204_165650"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window50_Stride05_Labels_soft/run_20260206_002220"
 
 
 # ========================================
@@ -86,14 +86,14 @@ preprocess:
     # Percentile clipping (clip extreme values to reduce outlier impact)
     percentile_clip:
       apply: true                 # Set to true to apply percentile clipping
-      percentile: 90               # Values beyond this percentile are clipped
+      percentile: 99               # Values beyond this percentile are clipped
       symmetric: true              # true: clip to [-p, +p] using abs values
                                    # false: clip positive/negative independently
 
   tokenization:
     tokens2file: true
     startendID: false
-    window: 25
+    window: 50
     stride: 5
     description: "Specifies the tokenization process."
 

@@ -201,7 +201,7 @@ def create_visualization(exp_path, data, show_labels=True):
         # Use 99th percentile for color range to enhance contrast by clipping outliers.
         # This prevents extreme values from compressing the colorscale and washing out
         # the visualization. Outlier values simply saturate to the colorscale limits.
-        diff_max = np.percentile(np.abs(processed_us), 90)
+        diff_max = np.percentile(np.abs(processed_us), 99)
         us_zmin, us_zmax, us_zmid = -diff_max, diff_max, 0
         colorbar_title = 'dUS/dt'
     else:
