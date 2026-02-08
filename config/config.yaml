@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window50_Stride05_Labels_soft/run_20260206_002220"
+    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window20_Stride02_Labels_soft/latest"
 
 
 # ========================================
@@ -93,8 +93,8 @@ preprocess:
   tokenization:
     tokens2file: true
     startendID: false
-    window: 50
-    stride: 5
+    window: 20
+    stride: 2
     description: "Specifies the tokenization process."
 
   sequencing:
@@ -221,14 +221,31 @@ ml:
           enabled: true
           max_shift: 3                      # Max temporal shift in samples
 
+    # =========================================
+    # STEP 6: ON-THE-FLY AUGMENTATION (train only)
+    # =========================================
+    # Stochastic augmentation applied to ALL training samples every epoch.
+    # Independent of oversample_config (which only augments balanced minority samples).
+    train_augmentation:
+      enabled: true                        # Set true to enable general augmentation
+      noise:
+        enabled: true
+        std: 0.02                           # Gaussian noise standard deviation
+      scale:
+        enabled: true
+        range: [0.9, 1.1]                   # Amplitude scaling range
+      shift:
+        enabled: true
+        max_shift: 3                        # Max temporal shift in samples
+
 
   # =====================================================================
   # UNET CONFIGURATION (Multihead Classifier)
   # =====================================================================
   model:
     type: "UNetAutoencoder"           # "CNNAutoencoder", "UNetAutoencoder", "TransformerAutoencoder"
-    channels_per_layer: [16, 32, 64]       # 3 levels (preserves temporal dim=2 at bottleneck)
-    embedding_dim: 128                # Less aggressive compression
+    channels_per_layer: [32, 64, 128]       # 2x wider for more feature diversity (was [16, 32, 64])
+    embedding_dim: 256                # More room for reconstruction + classification (was 128)
     num_heads: 8                   # For transformer models
     num_layers: 4                  # For transformer models
 
@@ -281,8 +298,8 @@ ml:
   training:
     # Basic Training Parameters
     epochs: 200
-    lr: 0.00005                        # Lower LR to reduce overfitting (was 0.0003)
-    weight_decay: 0.02                # Stronger weight decay for regularization (was 0.01)
+    lr: 0.0002                          # Higher LR paired with stronger regularization (was 0.00005)
+    weight_decay: 0.03                # Stronger weight decay for wider model (was 0.02)
 
     # Optimizer Configuration
     optimizer:
@@ -293,22 +310,24 @@ ml:
 
     # Learning Rate Scheduler
     lr_scheduler:
-      type: "cosine"                  # plateau, onecycle, cosine, step, none
+      type: "cosine_warmup"           # plateau, onecycle, cosine, cosine_warmup, step, none
+      warmup_epochs: 5                # Linear warmup from 1% to full LR
+      eta_min: 1e-6                   # Minimum LR at end of cosine decay
 
     # Loss Configuration
     loss_weights:
-      mse_weight: 0.3
-      l1_weight: 0.3                  # More L1 = sharper reconstructions
-      embedding_reg: 0.0005
-      classification_weight: 0.6     # Joint classification loss (balanced with reconstruction)
+      mse_weight: 0.2                  # Reduced reconstruction dominance (was 0.3)
+      l1_weight: 0.2                   # Reduced reconstruction dominance (was 0.3)
+      embedding_reg: 0.0001            # Less embedding constraint (was 0.0005)
+      classification_weight: 0.8       # More gradient budget for classification (was 0.6)
 
     # Training Regularization
     regularization:
       grad_clip_norm: 1.0            # Gradient clipping norm
       batch_norm: true               # Use batch normalization
       dropout:
-        spatial: 0.2                 # Dropout2d between conv blocks (0.1-0.2 recommended)
-        fc: 0.4            # Dropout in FC classifier head (0.3-0.5 recommended)
+        spatial: 0.3                 # Stronger regularization for wider model (was 0.2)
+        fc: 0.5                      # Stronger regularization for wider model (was 0.4)
 
     # Class Imbalance Handling
     imbalance:
@@ -335,7 +354,7 @@ ml:
         #   - power < 1.0: Use when minority classes have noisy labels or you want smoother training
         #   - power = 1.0: Standard choice, theoretically optimal for clean labels
         #   - power > 1.0: Use when minority classes are critical and you accept some majority degradation
-        power: 1.1
+        power: 0.6                        # Less aggressive minority push, recover Noise acc (was 1.1)
 
         # Custom weights (only used when method="custom")
         # Order: [Noise, Up, Down, Left, Right]
@@ -359,8 +378,8 @@ ml:
     # Early Stopping
     early_stopping:
       enabled: true                  # Enable early stopping
-      patience: 20                   # Epochs to wait for improvement (was 25)
-      min_delta: 0.001               # Minimum change to count as improvement (0.1% for balanced_accuracy)
+      patience: 30                   # More time for regularized model to train (was 20)
+      min_delta: 0.0005              # More sensitive to small improvements (was 0.001)
       monitor: "val_balanced_accuracy"   # Metric to monitor: val_loss, val_accuracy, val_balanced_accuracy
 
 
@@ -374,7 +393,7 @@ ml:
 # The regular precompute_datasets.py creates a single split (non-CV mode).
 #
 cross_validation:
-  output_subdir: "cv_folds"             # Folds saved to: {data_root}/{output_subdir}/fold_X/
+  output_subdir: "cv_folds_test_P0"             # Folds saved to: {data_root}/{output_subdir}/fold_X/
 
   # =========================================
   # CV STRATEGY (choose one)
@@ -445,8 +464,8 @@ cross_validation:
   #   Aggregated: Compare performance across participants
   #
   participant_within:
-    participant_filter: all            # "all", null, single ID, or list of IDs [0, 1, 2]
-    inner_folds: 10                    # K-fold CV within each participant (null or 1 = single split)
+    participant_filter: null           # "all", null, single ID, or list of IDs [0, 1, 2]
+    inner_folds: null                    # K-fold CV within each participant (null or 1 = single split)
     test_val_split_ratio: 0.5          # Split holdout into 50% val, 50% test
     # Note: train_ratio is now determined by inner_folds (K-1)/K for training
 

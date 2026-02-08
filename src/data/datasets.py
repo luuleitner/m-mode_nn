@@ -836,12 +836,16 @@ class FilteredSplitH5Dataset(Dataset):
                 # Load sequence: [seq_length, channels, height, width] or [channels, height, width]
                 sequence_data = f[self.dataset_key][sequence_idx].copy()
 
-                # Apply augmentation if this is an augmented sample
+                # Apply augmentation if this is an augmented sample (balance augmenter)
                 if is_augmented and hasattr(self, 'augmenter') and self.augmenter is not None:
                     # Set seed for reproducible augmentation
                     if augment_seed is not None:
                         np.random.seed(augment_seed)
                     sequence_data = self.augmenter(sequence_data)
+
+                # Apply general on-the-fly augmentation (all training samples, stochastic)
+                if hasattr(self, 'general_augmenter') and self.general_augmenter is not None:
+                    sequence_data = self.general_augmenter(sequence_data)
 
                 batch_sequences.append(sequence_data)
 
@@ -875,6 +879,12 @@ class FilteredSplitH5Dataset(Dataset):
             'tokens': torch.from_numpy(final_batch),
             'labels': torch.from_numpy(final_labels) if final_labels is not None else None
         }
+
+    def set_general_augmenter(self, augmenter):
+        """Attach augmenter for on-the-fly training augmentation (all samples, stochastic)."""
+        if self.split_type != 'train':
+            raise ValueError(f"General augmenter only for train split, got '{self.split_type}'")
+        self.general_augmenter = augmenter
 
     def get_batch_metadata(self, batch_idx):
         """Get metadata for all sequences in a specific batch"""

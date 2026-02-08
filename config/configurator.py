@@ -257,6 +257,13 @@ class ConfigurationManager:
             'grad_clip_norm': self.get_regularization_config()['grad_clip_norm']
         }
 
+    def get_train_augmentation_config(self) -> Dict[str, Any]:
+        """Get on-the-fly training augmentation config (independent of oversampling)."""
+        aug = getattr(self.ml.dataset, 'train_augmentation', None)
+        if aug is None:
+            return {'enabled': False}
+        return self._namespace_to_dict(aug)
+
     def get_dataset_parameters(self) -> Dict[str, Any]:
         """Get dataset parameters for function calls"""
         ds = self.ml.dataset

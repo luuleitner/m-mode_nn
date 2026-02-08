@@ -121,7 +121,22 @@ class BaseTrainer:
                 steps_per_epoch=steps_per_epoch
             )
         elif scheduler_type == 'cosine':
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=epochs, eta_min=kwargs.get('eta_min', 0)
+            )
+        elif scheduler_type == 'cosine_warmup':
+            warmup_epochs = kwargs.get('warmup_epochs', 5)
+            eta_min = kwargs.get('eta_min', 1e-6)
+            warmup = optim.lr_scheduler.LinearLR(
+                self.optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs
+            )
+            cosine = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=epochs - warmup_epochs, eta_min=eta_min
+            )
+            self.scheduler = optim.lr_scheduler.SequentialLR(
+                self.optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs]
+            )
+            logger.info(f"Cosine warmup: {warmup_epochs} warmup epochs, eta_min={eta_min}")
         elif scheduler_type == 'step':
             self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=epochs // 3, gamma=0.1)
         elif scheduler_type == 'none':
@@ -440,22 +455,31 @@ class BaseTrainer:
         return result
 
     def fit(self, train_loader, val_loader, epochs=100, learning_rate=1e-3, weight_decay=1e-4,
-            optimizer_type='adamw', scheduler_type='plateau', loss_weights=None,
-            grad_clip_norm=1.0, restart=False):
+            optimizer_type='adamw', scheduler_type='plateau', scheduler_config=None,
+            loss_weights=None, grad_clip_norm=1.0, restart=False):
         """Main training loop. Returns training history dict."""
         # Setup
         self.setup_optimizer(optimizer_type, learning_rate, weight_decay)
-        self.setup_scheduler(scheduler_type, epochs, len(train_loader))
+        self.setup_scheduler(scheduler_type, epochs, len(train_loader), **(scheduler_config or {}))
 
         # Restart if requested
         start_epoch = 0
         if restart:
-            checkpoint_path = self.restart_manager.find_latest_checkpoint()
-            if checkpoint_path:
-                start_epoch, self.history = self.restart_manager.load_checkpoint(
-                    checkpoint_path, self.model, self.optimizer, self.scheduler, self.device
+            if isinstance(restart, str):
+                # Explicit path: transfer learning — load model weights only, fresh optimizer/scheduler
+                logger.info(f"Loading pretrained weights from: {restart}")
+                self.restart_manager.load_checkpoint(
+                    restart, self.model, optimizer=None, scheduler=None, device=self.device, strict=False
                 )
-                logger.info(f"Restarting from epoch {start_epoch}")
+                # start_epoch stays 0, history stays empty — fresh training with pretrained weights
+            else:
+                # Auto-find: resume training — restore full state
+                checkpoint_path = self.restart_manager.find_latest_checkpoint()
+                if checkpoint_path:
+                    start_epoch, self.history = self.restart_manager.load_checkpoint(
+                        checkpoint_path, self.model, self.optimizer, self.scheduler, self.device
+                    )
+                    logger.info(f"Restarting from epoch {start_epoch}")
 
         # Log input info
         sample_batch = next(iter(train_loader))

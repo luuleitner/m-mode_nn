@@ -369,6 +369,15 @@ def main(config_path, restart=False):
 
     # Load data
     train_ds, val_ds, test_ds = load_or_create_datasets(config)
+
+    # Attach on-the-fly augmentation
+    aug_config = config.get_train_augmentation_config()
+    if aug_config.get('enabled', False):
+        from src.data.augmentations import SignalAugmenter
+        aug_cfg = {k: v for k, v in aug_config.items() if k != 'enabled'}
+        train_ds.set_general_augmenter(SignalAugmenter(config=aug_cfg))
+        logger.info("On-the-fly training augmentation enabled")
+
     train_loader, val_loader, test_loader = create_dataloaders(
         train_ds, val_ds, test_ds, config
     )
@@ -423,6 +432,13 @@ def main(config_path, restart=False):
             trainer.set_class_weights(class_weights_dict, num_classes)
             logger.info(f"Using class-weighted classification loss")
 
+    # Build scheduler config from YAML
+    sched_cfg = config.ml.training.lr_scheduler
+    scheduler_config = {
+        k: getattr(sched_cfg, k) for k in dir(sched_cfg)
+        if not k.startswith('_') and k != 'type'
+    } if sched_cfg else {}
+
     # Train
     try:
         history = trainer.fit(
@@ -433,6 +449,7 @@ def main(config_path, restart=False):
             weight_decay=config.ml.training.weight_decay,
             optimizer_type=config.ml.training.optimizer.type,
             scheduler_type=config.ml.training.lr_scheduler.type,
+            scheduler_config=scheduler_config,
             loss_weights=loss_weights,
             grad_clip_norm=regularization['grad_clip_norm'],
             restart=restart
@@ -525,8 +542,8 @@ def parse_args():
 
     parser.add_argument(
         '--restart', '-r',
-        action='store_true',
-        help='Restart training from latest checkpoint'
+        nargs='?', const=True, default=False,
+        help='Restart from checkpoint. Optionally specify path: --restart /path/to/ckpt.pth'
     )
 
     return parser.parse_args()

@@ -185,8 +185,9 @@ def train_single_fold(config, fold_dir, fold_idx, fold_output_dir, device, args)
             logger.info(f"Strategy: {strategy}, participant: {fold_info.get('participant')} "
                        f"({fold_info.get('n_experiments', '?')} experiments)")
 
-    # Load datasets
-    train_ds, val_ds, test_ds = load_fold_datasets(fold_dir)
+    # Load datasets (with optional on-the-fly augmentation)
+    aug_config = config.get_train_augmentation_config()
+    train_ds, val_ds, test_ds = load_fold_datasets(fold_dir, augmentation_config=aug_config)
     logger.info(f"Train batches: {len(train_ds)}, Val batches: {len(val_ds)}, Test batches: {len(test_ds)}")
 
     # Create data loaders
@@ -325,8 +326,8 @@ Examples:
                         help='List all previous training runs and exit')
     parser.add_argument('--no-wandb', action='store_true',
                         help='Disable WandB logging')
-    parser.add_argument('--restart', '-r', action='store_true',
-                        help='Restart from latest checkpoint')
+    parser.add_argument('--restart', '-r', nargs='?', const=True, default=False,
+                        help='Restart from checkpoint. Optionally specify path: --restart /path/to/ckpt.pth')
 
     args = parser.parse_args()
 

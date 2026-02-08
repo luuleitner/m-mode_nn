@@ -39,8 +39,11 @@ class RestartManager:
         logger.info(f"No checkpoints found in: {self.checkpoint_dir}")
         return None
 
-    def load_checkpoint(self, checkpoint_path, model, optimizer=None, scheduler=None, device=None):
-        """Load checkpoint and restore training state. Returns (start_epoch, history)."""
+    def load_checkpoint(self, checkpoint_path, model, optimizer=None, scheduler=None, device=None, strict=True):
+        """Load checkpoint and restore training state. Returns (start_epoch, history).
+
+        Use strict=False for transfer learning where model architecture may differ.
+        """
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
@@ -48,7 +51,11 @@ class RestartManager:
         checkpoint = torch.load(checkpoint_path, map_location=device)
 
         # Load model state
-        model.load_state_dict(checkpoint['model_state_dict'])
+        missing, unexpected = model.load_state_dict(checkpoint['model_state_dict'], strict=strict)
+        if missing:
+            logger.warning(f"Missing keys (randomly initialized): {missing}")
+        if unexpected:
+            logger.warning(f"Unexpected keys (ignored): {unexpected}")
         logger.info("Model state loaded")
 
         # Load optimizer state
