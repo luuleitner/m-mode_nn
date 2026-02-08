@@ -742,11 +742,23 @@ class DirectClassifierTrainer:
         # Restart from checkpoint if requested
         start_epoch = 0
         if restart:
-            ckpt_path = os.path.join(self.output_dir, 'checkpoints', 'checkpoint_latest.pth')
-            if os.path.exists(ckpt_path):
-                start_epoch = self.load_checkpoint(ckpt_path)
+            if isinstance(restart, str):
+                # Explicit path: transfer learning — load model weights only
+                logger.info(f"Loading pretrained weights from: {restart}")
+                checkpoint = torch.load(restart, map_location=self.device)
+                missing, unexpected = self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                if missing:
+                    logger.warning(f"Missing keys (randomly initialized): {missing}")
+                if unexpected:
+                    logger.warning(f"Unexpected keys (ignored): {unexpected}")
+                # start_epoch stays 0 — fresh training with pretrained weights
             else:
-                logger.warning(f"No checkpoint found at {ckpt_path}, starting from scratch")
+                # Auto-find: resume training
+                ckpt_path = os.path.join(self.output_dir, 'checkpoints', 'checkpoint_latest.pth')
+                if os.path.exists(ckpt_path):
+                    start_epoch = self.load_checkpoint(ckpt_path)
+                else:
+                    logger.warning(f"No checkpoint found at {ckpt_path}, starting from scratch")
 
         # Training loop
         for epoch in range(start_epoch, self.epochs):
@@ -1005,7 +1017,8 @@ def main():
                         help='Directory with train_ds.pkl/val_ds.pkl/test_ds.pkl (overrides config)')
     parser.add_argument('--no-wandb', action='store_true', help='Disable WandB logging')
     parser.add_argument('--output-dir', '-o', type=str, default=None, help='Output directory')
-    parser.add_argument('--restart', '-r', action='store_true', help='Restart from latest checkpoint')
+    parser.add_argument('--restart', '-r', nargs='?', const=True, default=False,
+                        help='Restart from checkpoint. Optionally specify path: --restart /path/to/ckpt.pth')
     args = parser.parse_args()
 
     # Load config
@@ -1058,6 +1071,14 @@ def main():
     # Load datasets first to infer input dimensions
     data_dir = args.data_dir
     train_ds, val_ds, test_ds = load_datasets(config, data_dir=data_dir)
+
+    # Attach on-the-fly augmentation
+    aug_config = config.get_train_augmentation_config()
+    if aug_config.get('enabled', False):
+        from src.data.augmentations import SignalAugmenter
+        aug_cfg = {k: v for k, v in aug_config.items() if k != 'enabled'}
+        train_ds.set_general_augmenter(SignalAugmenter(config=aug_cfg))
+        logger.info("On-the-fly training augmentation enabled")
 
     # Infer input dimensions from data
     sample = train_ds[0]

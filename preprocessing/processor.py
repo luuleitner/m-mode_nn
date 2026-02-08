@@ -395,9 +395,23 @@ class DataProcessor():
 
 
     def _load_fstructure(self):
-        """Load all experiment folders from raw data directory."""
-        # New hierarchy: P*/session*/exp*
+        """Load all experiment folders from raw data directory.
+
+        Auto-detects directory hierarchy:
+          - sgambato format: P*/session*/exp*
+          - leitner format: session*_W_*/<numbered_dirs>
+        """
+        # Try sgambato format first: P*/session*/exp*
         all_paths = glob.glob(os.path.join(self._data_path_raw, "P*", "session*", "exp*"))
+
+        if not all_paths:
+            # Fallback: leitner format — session*/<numbered_dirs>
+            all_paths = glob.glob(os.path.join(self._data_path_raw, "session*", "*"))
+            all_paths = [p for p in all_paths
+                         if os.path.isdir(p) and os.path.basename(p).isdigit()]
+            if all_paths:
+                logger.info("Auto-detected leitner directory hierarchy (session*/N)")
+
         self._fstructure = sorted([
             f for f in all_paths
             if os.path.isdir(f)
@@ -583,16 +597,24 @@ class DataProcessor():
         # Expected format: .../P000/session000/exp000
         session_path = os.path.normpath(exp)
 
+        # Try sgambato format: .../P000/session000/exp000
         match = re.search(r"P(\d+)/session(\d+)/exp(\d+)", session_path)
         if match:
-            self._participant_id = str(int(match.group(1)))  # "000" -> "0"
-            self._session_id = str(int(match.group(2)))      # "000" -> "0"
-            self._experiment_id = str(int(match.group(3)))   # "000" -> "0"
+            self._participant_id = str(int(match.group(1)))
+            self._session_id = str(int(match.group(2)))
+            self._experiment_id = str(int(match.group(3)))
         else:
-            logger.warning(f"Could not parse P/session/exp from path: {session_path}")
-            self._participant_id = None
-            self._session_id = None
-            self._experiment_id = None
+            # Try leitner format: .../session14_W_001/5
+            match = re.search(r"session(\d+)_\w+_(\d+)[/\\](\d+)$", session_path)
+            if match:
+                self._session_id = str(int(match.group(1)))
+                self._participant_id = str(int(match.group(2)))
+                self._experiment_id = str(int(match.group(3)))
+            else:
+                logger.warning(f"Could not parse experiment info from path: {session_path}")
+                self._participant_id = None
+                self._session_id = None
+                self._experiment_id = None
 
         # ---------------------------------------------
         # Run Processing on Experimental Data
@@ -616,84 +638,6 @@ class DataProcessor():
         return sequence, sequence_label, token2sequence_id
 
 
-    def _signal_processing(self, data):
-
-        # Clipping
-        if self._clip_flag:
-            clip_end = data.shape[1] - self._clip_samples2remove_end
-            data = data[:, self._clip_samples2remove_start:clip_end, :]
-
-        # Time Gain Compensation (TGC)
-        if self._tgc_flag:
-            data = Time_Gain_Compensation(data, freq=self._tgc_fs, coef_att=self._tgc_coef_att)
-
-        # Bandpass Filtering
-        if self._bandpass_flag:
-            data = butter_bandpass_filter(data,
-                                          ax=1,
-                                          lowcut=self._bandpass_lowcut,
-                                          highcut=self._bandpass_highcut,
-                                          fs=self._bandpass_fs,
-                                          order=self._bandpass_order)
-
-        #---Envelope
-        if self._envelope_flag:
-            data = envelope(analytic_signal(data))
-
-            #---Envelope Lowpass (anti-aliasing before decimation)
-            if self._envelope_lp_flag and self._decimation_flag:
-                if self._envelope_lp_mode == 'auto':
-                    # Auto: cutoff = 0.4 * fs / decimation_factor (80% of Nyquist)
-                    cutoff = 0.4 * self._bandpass_fs / self._decimation_factor
-                else:
-                    cutoff = self._envelope_lp_manual_cutoff
-                data = butter_lowpass_filter(data, ax=1, cutoff=cutoff,
-                                             fs=self._bandpass_fs, order=self._envelope_lp_order)
-
-        # Decimation
-        if self._decimation_flag:
-            data = data[:, ::self._decimation_factor, :]
-
-        #---Logcompression
-        if self._logcompression_flag:
-            data = logcompression(data, self._logcompression_dbrange)
-
-        #---Normalization
-        if self._normalization_flag:
-            # Normalize Data
-            if self._normalization_technique == 'peak':
-                data  = peak_normalization(data)
-            if self._normalization_technique == 'peakZ':
-                data  = Z_normalization(peak_normalization(data))
-
-        #---Differentiation (temporal gradient along pulse/slow-time axis)
-        if self._differentiation_flag:
-            # Apply differentiation along the pulse axis (axis=2)
-            for _ in range(self._differentiation_order):
-                if self._differentiation_method == 'gradient':
-                    # Central differences, preserves array length
-                    data = np.gradient(data, axis=2)
-                elif self._differentiation_method == 'diff':
-                    # Forward differences, reduces length by 1
-                    data = np.diff(data, axis=2)
-                else:
-                    raise ValueError(f"Unknown differentiation method: {self._differentiation_method}")
-            logger.info(f"Applied {self._differentiation_order}-order differentiation ({self._differentiation_method}) along pulse axis")
-
-        #---Percentile Clipping (clip outliers to Nth percentile)
-        if self._percentile_clip_flag:
-            if self._percentile_clip_symmetric:
-                # Symmetric: clip to [-threshold, +threshold] based on absolute values
-                threshold = np.percentile(np.abs(data), self._percentile_clip_value)
-                data = np.clip(data, -threshold, threshold)
-            else:
-                # Asymmetric: clip positive and negative values independently
-                upper = np.percentile(data, self._percentile_clip_value)
-                lower = np.percentile(data, 100 - self._percentile_clip_value)
-                data = np.clip(data, lower, upper)
-            logger.info(f"Applied percentile clipping at {self._percentile_clip_value}th percentile (symmetric={self._percentile_clip_symmetric})")
-
-        return data
 
 
     def _tokenizer(self, data, joystick_data, plot_flag):
