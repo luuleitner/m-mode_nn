@@ -87,6 +87,55 @@ def compute_reconstruction_loss(reconstruction, target, mse_weight=0.5, l1_weigh
     return total, {'mse': mse_loss.item(), 'l1': l1_loss.item()}
 
 
+def compute_supervised_contrastive_loss(embeddings, labels, temperature=0.07):
+    """
+    Supervised contrastive loss (Khosla et al. 2020) using in-batch pairs.
+
+    For each anchor, all same-class samples in the batch are positives,
+    all different-class samples are negatives. No special sampling needed.
+
+    Args:
+        embeddings: (B, D) embedding vectors
+        labels: (B,) integer class labels
+        temperature: Scaling factor for cosine similarities
+
+    Returns:
+        Scalar loss
+    """
+    # L2-normalize to unit sphere — cosine similarity via dot product
+    embeddings = F.normalize(embeddings, dim=1)
+
+    # Pairwise cosine similarity [B, B]
+    sim_matrix = torch.mm(embeddings, embeddings.t()) / temperature
+
+    # Mask: same-class pairs (excluding self)
+    labels = labels.view(-1, 1)
+    positive_mask = (labels == labels.t()).float()
+    positive_mask.fill_diagonal_(0)  # exclude self-pairs
+
+    # Number of positives per anchor
+    num_positives = positive_mask.sum(dim=1)
+
+    # Skip anchors with no positives (e.g., singleton class in batch)
+    valid = num_positives > 0
+    if valid.sum() == 0:
+        return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
+
+    # Log-softmax over all non-self entries (numerically stable)
+    # Mask out self-similarity by setting diagonal to -inf
+    logits_mask = torch.ones_like(sim_matrix)
+    logits_mask.fill_diagonal_(0)
+    log_prob = sim_matrix - torch.logsumexp(
+        sim_matrix * logits_mask + (1 - logits_mask) * (-1e9), dim=1, keepdim=True
+    )
+
+    # Mean log-prob over positive pairs, averaged over valid anchors
+    mean_log_prob = (positive_mask * log_prob).sum(dim=1) / num_positives.clamp(min=1)
+    loss = -mean_log_prob[valid].mean()
+
+    return loss
+
+
 def compute_joint_loss(reconstruction, target, logits, soft_labels, hard_labels,
                        class_weights=None, loss_weights=None, is_training=True):
     """

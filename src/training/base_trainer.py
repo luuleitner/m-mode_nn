@@ -247,6 +247,16 @@ class BaseTrainer:
             loss_dict['embedding_reg'] = embedding_reg.item()
             loss_dict['total'] = total_loss.item()
 
+        # Add supervised contrastive loss on embeddings
+        contrastive_weight = loss_weights.get('contrastive_weight', 0.0)
+        if contrastive_weight > 0 and hard_labels is not None:
+            from src.training.utils.losses import compute_supervised_contrastive_loss
+            temperature = loss_weights.get('contrastive_temperature', 0.07)
+            contrastive_loss = compute_supervised_contrastive_loss(embedding, hard_labels, temperature)
+            total_loss = total_loss + contrastive_weight * contrastive_loss
+            loss_dict['contrastive_loss'] = contrastive_loss.item()
+            loss_dict['total'] = total_loss.item()
+
         # Rename for backward compatibility
         loss_dict['total_loss'] = loss_dict.get('total', total_loss.item())
         loss_dict['mse_loss'] = loss_dict.get('mse', 0.0)
@@ -262,6 +272,7 @@ class BaseTrainer:
         total_loss = 0
         total_correct = 0
         total_samples = 0
+        total_contrastive_loss = 0
         has_classifier = False
         all_preds = []
         all_labels = []
@@ -299,6 +310,8 @@ class BaseTrainer:
             batch_size = data.size(0)
             total_loss += loss.item() * batch_size
             total_samples += batch_size
+            if 'contrastive_loss' in loss_dict:
+                total_contrastive_loss += loss_dict['contrastive_loss'] * batch_size
 
             if 'cls_accuracy' in loss_dict and logits is not None:
                 soft_labels, hard_labels = self._prepare_labels(labels)
@@ -316,6 +329,9 @@ class BaseTrainer:
             self.callbacks.on_batch_end(batch_idx, loss_dict)
 
         avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
+        self._last_train_contrastive_loss = (
+            total_contrastive_loss / total_samples if total_contrastive_loss > 0 else None
+        )
 
         if has_classifier and total_samples > 0:
             avg_accuracy = total_correct / total_samples
@@ -349,6 +365,7 @@ class BaseTrainer:
         self.model.eval()
         total_loss = 0
         total_mse = 0
+        total_contrastive_loss = 0
         total_samples = 0
         total_correct = 0
         has_classifier = False
@@ -380,6 +397,8 @@ class BaseTrainer:
                 total_loss += loss.item() * batch_size
                 total_mse += mse.item() * batch_size
                 total_samples += batch_size
+                if 'contrastive_loss' in loss_dict:
+                    total_contrastive_loss += loss_dict['contrastive_loss'] * batch_size
 
                 if logits is not None and labels is not None:
                     soft_labels, hard_labels = self._prepare_labels(labels)
@@ -395,6 +414,8 @@ class BaseTrainer:
             'loss': total_loss / total_samples if total_samples > 0 else 0.0,
             'mse': total_mse / total_samples if total_samples > 0 else 0.0,
         }
+        if total_contrastive_loss > 0:
+            result['contrastive_loss'] = total_contrastive_loss / total_samples
 
         if has_classifier and all_preds:
             all_preds = np.array(all_preds)
@@ -538,6 +559,10 @@ class BaseTrainer:
                 callback_logs['val_accuracy'] = val_accuracy
                 callback_logs['val_balanced_accuracy'] = val_balanced_acc
                 callback_logs['per_class_acc'] = val_per_class
+            if self._last_train_contrastive_loss is not None:
+                callback_logs['train_contrastive_loss'] = self._last_train_contrastive_loss
+            if 'contrastive_loss' in val_metrics:
+                callback_logs['val_contrastive_loss'] = val_metrics['contrastive_loss']
 
             self.callbacks.on_epoch_end(epoch, callback_logs)
 

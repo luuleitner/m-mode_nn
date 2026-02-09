@@ -179,6 +179,12 @@ class WandBCallback(Callback):
             if 'val_balanced_accuracy' in logs:
                 log_dict['val/balanced_accuracy'] = logs.get('val_balanced_accuracy')
 
+            # Contrastive loss (if enabled)
+            if 'train_contrastive_loss' in logs:
+                log_dict['train/contrastive_loss'] = logs.get('train_contrastive_loss')
+            if 'val_contrastive_loss' in logs:
+                log_dict['val/contrastive_loss'] = logs.get('val_contrastive_loss')
+
             # Train-val gap (overfitting indicators)
             train_loss = logs.get('train_loss')
             val_loss = logs.get('val_loss')
@@ -321,6 +327,8 @@ class WandBCallback(Callback):
                 log_dict['batch/cls_loss'] = logs.get('cls_loss')
             if 'cls_accuracy' in logs:
                 log_dict['batch/cls_accuracy'] = logs.get('cls_accuracy')
+            if 'contrastive_loss' in logs:
+                log_dict['batch/contrastive_loss'] = logs.get('contrastive_loss')
 
             wandb.log(log_dict)
             self._batch_step += 1
