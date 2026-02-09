@@ -320,6 +320,8 @@ ml:
       l1_weight: 0.2                   # Reduced reconstruction dominance (was 0.3)
       embedding_reg: 0.0001            # Less embedding constraint (was 0.0005)
       classification_weight: 0.8       # More gradient budget for classification (was 0.6)
+      contrastive_weight: 0.1          # Supervised contrastive loss on embeddings (0.0 to disable)
+      contrastive_temperature: 0.1    # Temperature for cosine similarity scaling
 
     # Training Regularization
     regularization:

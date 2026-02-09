@@ -106,23 +106,20 @@ class ConfigurationManager:
     # ========================================
 
     def get_loss_weights(self) -> Dict[str, float]:
-        """Get loss weights with defaults"""
+        """Get loss weights with defaults. Passes through all keys from config."""
+        defaults = {
+            'mse_weight': 0.8,
+            'l1_weight': 0.2,
+            'embedding_reg': 0.001,
+            'classification_weight': 0.0
+        }
         if hasattr(self.ml.training, 'loss_weights'):
             lw = self.ml.training.loss_weights
-            return {
-                'mse_weight': getattr(lw, 'mse_weight', 0.8),
-                'l1_weight': getattr(lw, 'l1_weight', 0.2),
-                'embedding_reg': getattr(lw, 'embedding_reg', 0.001),
-                'classification_weight': getattr(lw, 'classification_weight', 0.0)
-            }
-        else:
-            # Return defaults if not in config
-            return {
-                'mse_weight': 0.8,
-                'l1_weight': 0.2,
-                'embedding_reg': 0.001,
-                'classification_weight': 0.0
-            }
+            # Pass through all config keys, not just known ones
+            for key in dir(lw):
+                if not key.startswith('_'):
+                    defaults[key] = getattr(lw, key)
+        return defaults
 
     def get_restart_config(self) -> Dict[str, Any]:
         """Get restart configuration with defaults"""
