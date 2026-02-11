@@ -108,6 +108,8 @@ class FilteredSplitH5Dataset(Dataset):
                  balance_strategy='oversample',
                  oversample_config=None,
                  include_noise=None,
+                 # Sequence grouping parameters
+                 sequence_grouping=None,
                  _suppress_split_info=False,
                  _suppress_metadata_info=False):
         """
@@ -140,6 +142,14 @@ class FilteredSplitH5Dataset(Dataset):
         self.balance_classes = balance_classes
         self.balance_strategy = balance_strategy
         self.oversample_config = oversample_config or {}
+
+        # Sequence grouping: only for train split to preserve temporal order in shuffling
+        seq_cfg = sequence_grouping or {}
+        self.sequence_grouping_enabled = (
+            seq_cfg.get('enabled', False) and split_type == 'train'
+        )
+        self.seq_len = seq_cfg.get('seq_len', 15)
+        self.seq_stride = seq_cfg.get('seq_stride', self.seq_len)
 
         # Noise class handling: use parameter or fall back to global config
         self.include_noise = include_noise if include_noise is not None else _INCLUDE_NOISE
@@ -562,7 +572,13 @@ class FilteredSplitH5Dataset(Dataset):
         return test_data, val_data
 
     def _process_metadata(self, shuffle_experiments, shuffle_sequences):
-        """Process metadata and group by experiment"""
+        """Process metadata and group by experiment.
+
+        When sequence_grouping is enabled, tokens within each experiment are
+        grouped into overlapping sequences (sliding window over token indices).
+        Shuffling then operates on sequence groups instead of individual tokens,
+        preserving temporal order within each sequence.
+        """
 
         if len(self.metadata) == 0:
             self.experiment_groups = {}
@@ -576,7 +592,11 @@ class FilteredSplitH5Dataset(Dataset):
             # Sort by token_id to maintain sequence order
             group_sorted = group.sort_values('token_id').reset_index(drop=True)
 
-            if shuffle_sequences:
+            if self.sequence_grouping_enabled:
+                group_sorted = self._apply_sequence_grouping(
+                    group_sorted, shuffle_sequences
+                )
+            elif shuffle_sequences:
                 group_sorted = group_sorted.sample(frac=1).reset_index(drop=True)
 
             self.experiment_groups[file_path] = group_sorted
@@ -586,6 +606,38 @@ class FilteredSplitH5Dataset(Dataset):
 
         if shuffle_experiments:
             random.shuffle(self.experiment_list)
+
+    def _apply_sequence_grouping(self, group, shuffle):
+        """Group consecutive tokens into overlapping sequences via sliding window.
+
+        Tokens may appear in multiple sequences due to overlap (seq_stride < seq_len).
+        Shuffling operates on whole sequence groups, preserving temporal order within.
+
+        Args:
+            group: DataFrame of tokens from one experiment, sorted by token_id.
+            shuffle: Whether to shuffle the sequence groups.
+
+        Returns:
+            DataFrame with tokens ordered by (optionally shuffled) sequence groups.
+        """
+        num_tokens = len(group)
+        seq_len = self.seq_len
+        seq_stride = self.seq_stride
+        num_sequences = (num_tokens - seq_len) // seq_stride + 1
+
+        if num_sequences <= 0:
+            return group
+
+        sequence_groups = []
+        for seq_idx in range(num_sequences):
+            start = seq_idx * seq_stride
+            end = start + seq_len
+            sequence_groups.append(group.iloc[start:end])
+
+        if shuffle:
+            random.shuffle(sequence_groups)
+
+        return pd.concat(sequence_groups, ignore_index=True)
 
     def _build_batch_mapping(self):
         """Build mapping of batch_idx -> list of (file_path, sequence_metadata)"""
@@ -831,10 +883,10 @@ class FilteredSplitH5Dataset(Dataset):
                     file_cache[file_path] = h5py.File(full_path, 'r')
 
                 f = file_cache[file_path]
-                sequence_idx = int(seq_meta['sequence_id'])
+                token_idx = int(seq_meta['token_id'])
 
-                # Load sequence: [seq_length, channels, height, width] or [channels, height, width]
-                sequence_data = f[self.dataset_key][sequence_idx].copy()
+                # Load token: [channels, height, width]
+                sequence_data = f[self.dataset_key][token_idx].copy()
 
                 # Apply augmentation if this is an augmented sample (balance augmenter)
                 if is_augmented and hasattr(self, 'augmenter') and self.augmenter is not None:
@@ -851,7 +903,7 @@ class FilteredSplitH5Dataset(Dataset):
 
                 # Load labels if available
                 if 'label' in f:
-                    label_data = f['label'][sequence_idx]
+                    label_data = f['label'][token_idx]
                     batch_labels.append(label_data)
 
         finally:
@@ -925,6 +977,10 @@ class FilteredSplitH5Dataset(Dataset):
         print(f"  - Unique experiments: {len(self.experiment_groups)}")
         print(f"  - Total batches: {len(self.batch_mapping)}")
         print(f"  - Num classes: {self.num_classes} (noise {noise_status})")
+        if self.sequence_grouping_enabled:
+            overlap = self.seq_len - self.seq_stride
+            print(f"  - Sequence grouping: seq_len={self.seq_len}, "
+                  f"stride={self.seq_stride}, overlap={overlap}")
 
     def get_sample_weights(self):
         """
@@ -1012,6 +1068,8 @@ def create_filtered_split_datasets(
         oversample_config=None,
         # Noise class handling
         include_noise=None,
+        # Sequence grouping
+        sequence_grouping=None,
         **kwargs):
     """
     Convenience function to create datasets with filtered splitting
@@ -1026,6 +1084,7 @@ def create_filtered_split_datasets(
         balance_strategy: 'oversample' or 'undersample'
         oversample_config: Configuration for oversampling method and augmentations
         include_noise: Include noise class (None = use label_config.yaml setting)
+        sequence_grouping: Sequence grouping config dict (only applied to train set)
 
     Returns:
         Tuple of (train_dataset, test_dataset, val_dataset)
@@ -1059,6 +1118,7 @@ def create_filtered_split_datasets(
         'balance_strategy': balance_strategy,
         'oversample_config': oversample_config,
         'include_noise': include_noise,
+        'sequence_grouping': sequence_grouping,
         **filtered_kwargs
     }
 

@@ -296,6 +296,8 @@ class ConfigurationManager:
             'balance_classes': getattr(ds, 'balance_classes', False),
             'balance_strategy': getattr(ds, 'balance_strategy', 'oversample'),
             'oversample_config': oversample_config,
+            # Sequence grouping (only applied to train set)
+            'sequence_grouping': self._namespace_to_dict(getattr(ds, 'sequence_grouping', None)),
         }
 
     def _namespace_to_dict(self, obj):

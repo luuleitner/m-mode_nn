@@ -119,11 +119,12 @@ class DataProcessor():
         self._token_window = self._config.preprocess.tokenization.window
         self._token_stride = self._config.preprocess.tokenization.stride
 
-        # Sequences
-        self._sequence_window = self._config.preprocess.sequencing.window
+        # Sequences (legacy transformer mode, unused in flat mode)
+        seq_cfg = getattr(self._config.preprocess, 'sequencing', None)
+        self._sequence_window = getattr(seq_cfg, 'window', 1) if seq_cfg else 1
 
-        # Output mode: transformer (sequenced) or flat (CNN-ready)
-        self._output_mode = getattr(self._config.preprocess.output, 'mode', 'transformer')
+        # Output mode: flat saves tokens individually (sequencing handled at dataset level)
+        self._output_mode = getattr(self._config.preprocess.output, 'mode', 'flat')
 
         # Label configuration - load from separate label_config.yaml
         self._label_config = self._load_label_config()
@@ -181,11 +182,7 @@ class DataProcessor():
         if self._data_path_raw is None:
             raise ValueError("Data path not found in the config file under 'experiment: path'")
 
-        if self._output_mode == 'transformer':
-            self._file_save_id = f'TokenWin{int(self._config.preprocess.tokenization.window):02}_TokenStr{int(self._config.preprocess.tokenization.stride):02}_SeqWin{int(self._config.preprocess.sequencing.window):02}'
-        else:  # flat mode
-            soft_suffix = '_soft' if self._soft_labels_enabled else ''
-            self._file_save_id = f'Window{int(self._config.preprocess.tokenization.window):02}_Stride{int(self._config.preprocess.tokenization.stride):02}_Labels{soft_suffix}'
+        self._file_save_id = self._build_file_save_id()
 
         # Other Flags
         self._save_flag = self._config.preprocess.tokenization.tokens2file
@@ -282,6 +279,42 @@ class DataProcessor():
         local_log.append(log_entry)
         with open(local_log_path, 'w') as f:
             yaml.dump(local_log, f, default_flow_style=False)
+
+    def _build_file_save_id(self):
+        """Build a folder name that encodes all preprocessing params affecting the output.
+
+        Only enabled processing steps appear in the name, so different configs
+        always produce different folder names.
+
+        Format: {signal_tags}_{tokenization}_{labels}
+        Example: Env_Dec10_Log50_Npeak_W18_S01_Lsoft
+        """
+        sig = self._config.preprocess.signal
+        parts = []
+
+        # Signal processing tags (only enabled steps)
+        if getattr(sig.envelope, 'apply', False):
+            parts.append('Env')
+        if getattr(sig.decimation, 'apply', False):
+            parts.append(f'Dec{int(sig.decimation.factor)}')
+        if getattr(sig.logcompression, 'apply', False):
+            parts.append(f'Log{int(sig.logcompression.db)}')
+        if getattr(sig.normalization, 'apply', False):
+            parts.append(f'N{sig.normalization.method}')
+        if getattr(sig, 'differentiation', None) and getattr(sig.differentiation, 'apply', False):
+            parts.append(f'D{int(sig.differentiation.order)}')
+        if getattr(sig, 'percentile_clip', None) and getattr(sig.percentile_clip, 'apply', False):
+            parts.append(f'Pclip{int(sig.percentile_clip.percentile)}')
+
+        # Tokenization
+        parts.append(f'W{int(self._token_window):02d}')
+        parts.append(f'S{int(self._token_stride):02d}')
+
+        # Labels
+        label_tag = 'Lsoft' if self._soft_labels_enabled else 'Lhard'
+        parts.append(label_tag)
+
+        return '_'.join(parts)
 
     def _load_label_config(self):
         """Load label configuration from label_logic/label_config.yaml"""
