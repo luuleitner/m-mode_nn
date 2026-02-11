@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Abstract xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <protocol_code>dasda</protocol_code>
+  <time>2025-03-06T16:08:13.0379783+00:00</time>
+  <place>dasdadas</place>
+  <family_name>sdasdsa</family_name>
+  <first_name>dasdasda</first_name>
+  <sex>M</sex>
+  <birth_date>2025-03-06T00:00:00</birth_date>
+  <weight>0</weight>
+  <height>0</height>
+  <pathology />
+  <commentsPatient />
+  <comments>dasdda</comments>
+  <registration_date>2025-03-06T00:00:00</registration_date>
+  <software_version>OTBioLab+ v.1.6.0.0</software_version>
+  <duration>46.050</duration>
+</Abstract>

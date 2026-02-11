@@ -638,6 +638,84 @@ class DataProcessor():
         return sequence, sequence_label, token2sequence_id
 
 
+    def _signal_processing(self, data):
+
+        # Clipping
+        if self._clip_flag:
+            clip_end = data.shape[1] - self._clip_samples2remove_end
+            data = data[:, self._clip_samples2remove_start:clip_end, :]
+
+        # Time Gain Compensation (TGC)
+        if self._tgc_flag:
+            data = Time_Gain_Compensation(data, freq=self._tgc_fs, coef_att=self._tgc_coef_att)
+
+        # Bandpass Filtering
+        if self._bandpass_flag:
+            data = butter_bandpass_filter(data,
+                                          ax=1,
+                                          lowcut=self._bandpass_lowcut,
+                                          highcut=self._bandpass_highcut,
+                                          fs=self._bandpass_fs,
+                                          order=self._bandpass_order)
+
+        #---Envelope
+        if self._envelope_flag:
+            data = envelope(analytic_signal(data))
+
+            #---Envelope Lowpass (anti-aliasing before decimation)
+            if self._envelope_lp_flag and self._decimation_flag:
+                if self._envelope_lp_mode == 'auto':
+                    # Auto: cutoff = 0.4 * fs / decimation_factor (80% of Nyquist)
+                    cutoff = 0.4 * self._bandpass_fs / self._decimation_factor
+                else:
+                    cutoff = self._envelope_lp_manual_cutoff
+                data = butter_lowpass_filter(data, ax=1, cutoff=cutoff,
+                                             fs=self._bandpass_fs, order=self._envelope_lp_order)
+
+        # Decimation
+        if self._decimation_flag:
+            data = data[:, ::self._decimation_factor, :]
+
+        #---Logcompression
+        if self._logcompression_flag:
+            data = logcompression(data, self._logcompression_dbrange)
+
+        #---Normalization
+        if self._normalization_flag:
+            # Normalize Data
+            if self._normalization_technique == 'peak':
+                data  = peak_normalization(data)
+            if self._normalization_technique == 'peakZ':
+                data  = Z_normalization(peak_normalization(data))
+
+        #---Differentiation (temporal gradient along pulse/slow-time axis)
+        if self._differentiation_flag:
+            # Apply differentiation along the pulse axis (axis=2)
+            for _ in range(self._differentiation_order):
+                if self._differentiation_method == 'gradient':
+                    # Central differences, preserves array length
+                    data = np.gradient(data, axis=2)
+                elif self._differentiation_method == 'diff':
+                    # Forward differences, reduces length by 1
+                    data = np.diff(data, axis=2)
+                else:
+                    raise ValueError(f"Unknown differentiation method: {self._differentiation_method}")
+            logger.info(f"Applied {self._differentiation_order}-order differentiation ({self._differentiation_method}) along pulse axis")
+
+        #---Percentile Clipping (clip outliers to Nth percentile)
+        if self._percentile_clip_flag:
+            if self._percentile_clip_symmetric:
+                # Symmetric: clip to [-threshold, +threshold] based on absolute values
+                threshold = np.percentile(np.abs(data), self._percentile_clip_value)
+                data = np.clip(data, -threshold, threshold)
+            else:
+                # Asymmetric: clip positive and negative values independently
+                upper = np.percentile(data, self._percentile_clip_value)
+                lower = np.percentile(data, 100 - self._percentile_clip_value)
+                data = np.clip(data, lower, upper)
+            logger.info(f"Applied percentile clipping at {self._percentile_clip_value}th percentile (symmetric={self._percentile_clip_symmetric})")
+
+        return data
 
 
     def _tokenizer(self, data, joystick_data, plot_flag):
