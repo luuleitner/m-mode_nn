@@ -42,7 +42,7 @@ preprocess:
     tgc:
       apply: true
       freq: 50e6                      # 50 MSPS
-      coef_att: 0.3                   # Attenuation coefficient in dB/(MHz·cm) - 0.5 is the standard for soft tissue, adjust as needed
+      coef_att: 0.3                   # Attenuation coefficient in dB/(MHz·cm)
     bandpass:
       apply: true
       lowcut: 8e6                     # 8 MHz
@@ -56,12 +56,9 @@ preprocess:
         apply: true
         mode: "constant"
         amount: 30
-      # Anti-aliasing lowpass before decimation
       lowpass:
         apply: true
         mode: "auto"                    # auto | manual
-        # Auto mode: cutoff = 0.8 * (fs / decimation_factor / 2) = 0.4 * fs / D
-        # For D=10: 2 MHz, D=5: 4 MHz, D=2: 10 MHz
         manual_cutoff: 2e6              # Used only when mode="manual"
         order: 4
     decimation:
@@ -74,36 +71,25 @@ preprocess:
       apply: true
       method: "peak"
 
-    # Temporal differentiation (gradient along pulse/slow-time axis)
     differentiation:
-      apply: false                  # Set to true to use differentiated signal
-      method: "gradient"            # gradient | diff
-                                    # gradient: np.gradient (central differences, same length)
-                                    # diff: np.diff (forward differences, length-1)
-      order: 1                      # 1 = first derivative (velocity)
-                                    # 2 = second derivative (acceleration)
+      apply: false                   # Temporal differentiation (gradient along pulse/slow-time axis)
+      method: "gradient"             # gradient | diff
+      order: 1                       # 1 = velocity, 2 = acceleration
 
-    # Percentile clipping (clip extreme values to reduce outlier impact)
     percentile_clip:
-      apply: false                 # Set to true to apply percentile clipping
-      percentile: 99               # Values beyond this percentile are clipped
-      symmetric: true              # true: clip to [-p, +p] using abs values
-                                   # false: clip positive/negative independently
+      apply: false                   # Clip extreme values to reduce outlier impact
+      percentile: 99
+      symmetric: true                # true: clip to [-p, +p] using abs values
 
   tokenization:
     tokens2file: true
     startendID: false
-    window: 20
-    stride: 2
-    description: "Specifies the tokenization process."
-
-  sequencing:
-    window: 15
+    window: 18                        # Pulses per token
+    stride: 1                         # Pulse stride between tokens
 
   output:
-    mode: "flat"             # transformer | flat (flat for CNN, no sequencing)
+    mode: "flat"                      # flat: tokens saved individually, sequencing at dataset level
 
-  # Label configuration is in a separate file for clarity
   label_config: "preprocessing/label_logic/label_config.yaml"
 
 
@@ -112,423 +98,242 @@ preprocess:
 # ========================================
 ml:
   # =====================================================================
-  # DATASET CONFIGURATION - DATA SAMPLING PIPELINE
+  # DATASET CONFIGURATION
   # =====================================================================
-  # Data Loading
+  #  H5 files → Global filters → Test/Val selection → Split → Train remainder
+  #
   loading:
     load_data_pickle: false
-  #
-  #  ┌─────────────────────────────────────────────────────────────────┐
-  #  │  H5 FILES (from preprocessing)                                 │
-  #  └──────────────────────────┬──────────────────────────────────────┘
-  #                             │
-  #                             ▼
-  #  ┌─────────────────────────────────────────────────────────────────┐
-  #  │  STEP 1: GLOBAL FILTERS (reduce dataset before splitting)      │
-  #  │          Applied with AND logic to ALL data                    │
-  #  └──────────────────────────┬──────────────────────────────────────┘
-  #                             │
-  #                             ▼
-  #  ┌─────────────────────────────────────────────────────────────────┐
-  #  │  STEP 2: TEST/VAL SELECTION (strategy: "filter" or "random")   │
-  #  │          Select which data goes to test/val                    │
-  #  └──────────────────────────┬──────────────────────────────────────┘
-  #                             │
-  #                             ▼
-  #  ┌─────────────────────────────────────────────────────────────────┐
-  #  │  STEP 3: SPLIT TEST/VAL (ratio + level)                        │
-  #  │          Divide selected data into test and val sets           │
-  #  └──────────────────────────┬──────────────────────────────────────┘
-  #                             │
-  #                             ▼
-  #  ┌─────────────────────────────────────────────────────────────────┐
-  #  │  STEP 4: TRAIN = REMAINDER (+ shuffling)                       │
-  #  │          Everything not in test/val becomes training           │
-  #  └─────────────────────────────────────────────────────────────────┘
-  #
+
   dataset:
-    # --- Data Source ---
     data_root: *train_base_data_path
-    target_batch_size: &target_batch_size 250
+    target_batch_size: 250
     dataset_key: 'token'
     random_seed: *global_seed
 
-    # =========================================
-    # STEP 1: GLOBAL FILTERS
-    # =========================================
-    # Applied to ALL data BEFORE any splitting.
-    # Use to reduce dataset (e.g., exclude bad sessions).
-    # Filters combine with AND logic.
-    global_participant_filter: null         # e.g., [1, 2, 3] - keep only these
-    global_session_filter: null             # e.g., [14, 15] - keep only these
-    global_experiment_filter: null          # e.g., [0, 1, 2] - keep only these
-    global_label_filter: null               # e.g., [1, 2, 3, 4] - keep only movement
-    # NOTE: global_label_filter is auto-set to [1,2,3,4] when include_noise=false
-    #       in preprocessing/label_logic/label_config.yaml
+    # --- STEP 1: GLOBAL FILTERS ---
+    # Applied to ALL data BEFORE splitting. Filters combine with AND logic.
+    global_participant_filter: null         # e.g., [1, 2, 3]
+    global_session_filter: null             # e.g., [14, 15]
+    global_experiment_filter: null          # e.g., [0, 1, 2]
+    global_label_filter: null               # e.g., [1, 2, 3, 4] (auto-set when include_noise=false)
 
-    # =========================================
-    # STEP 2: TEST/VAL SELECTION STRATEGY
-    # =========================================
-    # Choose ONE strategy: "filter" or "random"
-    test_val_strategy: "random"
+    # --- STEP 2: TEST/VAL SELECTION ---
+    test_val_strategy: "random"             # "filter" or "random"
 
-    # --- Option A: FILTER strategy ---
-    # Select test/val by matching criteria (AND logic)
-    test_val_participant_filter: null       # e.g., [1, 2]
-    test_val_session_filter: null           # e.g., [14] - session 14 for test/val
-    test_val_experiment_filter: null        # e.g., [5, 6, 7]
-    test_val_label_filter: null             # e.g., [1, 2]
+    # Option A: FILTER strategy (AND logic)
+    test_val_participant_filter: null
+    test_val_session_filter: null
+    test_val_experiment_filter: null
+    test_val_label_filter: null
 
-    # --- Option B: RANDOM strategy ---
-    # Randomly select experiments for test/val
-    test_val_random_experiments: 0.2        # Count (>=1) or percentage (0-1), e.g., 3 or 0.1 for 10%
+    # Option B: RANDOM strategy
+    test_val_random_experiments: 0.2        # Count (>=1) or percentage (0-1)
     test_val_multi_session: true            # Prefer experiments from different sessions
 
-    # =========================================
-    # STEP 3: TEST/VAL SPLIT
-    # =========================================
+    # --- STEP 3: TEST/VAL SPLIT ---
     test_val_split_ratio: 0.5               # 0.5 = 50% test, 50% val
     split_level: "experiment"               # "sequence" or "experiment"
 
-    # =========================================
-    # STEP 4: SHUFFLING (for training)
-    # =========================================
-    shuffle_experiments: true               # Randomize experiment order
-    shuffle_sequences: true                 # Randomize sequence order within experiments
+    # --- STEP 4: SHUFFLING ---
+    shuffle_experiments: true
+    shuffle_sequences: true
 
-    # =========================================
-    # STEP 5: CLASS BALANCING (train set only)
-    # =========================================
-    # Two options: dataset-level (oversampling) OR loss-level (weighted loss)
-    # For joint AE+classification: use weighted loss to preserve real 90/5/5 distribution
-    balance_classes: false                  # Disabled: using weighted loss instead
-    balance_strategy: "oversample"          # (unused when balance_classes=false)
+    # --- STEP 5: SEQUENCE GROUPING (train only) ---
+    # Groups consecutive tokens into overlapping sequences using a sliding window.
+    # Shuffling operates at the sequence level, preserving temporal order within.
+    #
+    #   Tokens:  [T0, T1, T2, T3, T4, T5, T6, T7, ...]
+    #   seq_len=4, seq_stride=2:
+    #     S0: [T0, T1, T2, T3]
+    #     S1: [T2, T3, T4, T5]   (overlap = seq_len - seq_stride = 2)
+    #     S2: [T4, T5, T6, T7]
+    #   Shuffle: [S2, S0, S1, ...] — sequences shuffled, tokens ordered within
+    #
+    sequence_grouping:
+      enabled: true
+      seq_len: 20                       # Tokens per sequence
+      seq_stride: 5                     # Stride between sequences (overlap = seq_len - seq_stride)
+
+    # --- STEP 6: CLASS BALANCING (train only) ---
+    balance_classes: false                  # Using weighted loss instead
+    balance_strategy: "oversample"
 
     oversample_config:
       method: "augment"                     # duplicate | augment | mixed
-      target_ratio: 0.2                     # 1.0 = match majority class count
+      target_ratio: 0.2
       augment_ratio: 0.3                    # For 'mixed': ratio of augmented vs duplicated
-
-      # Augmentation settings (semantically preserving transforms)
       augmentations:
         noise:
           enabled: true
-          std: 0.02                         # Gaussian noise standard deviation
+          std: 0.02
         scale:
           enabled: true
-          range: [0.9, 1.1]                 # Amplitude scaling range
+          range: [0.9, 1.1]
         shift:
           enabled: true
-          max_shift: 3                      # Max temporal shift in samples
+          max_shift: 3
 
-    # =========================================
-    # STEP 6: ON-THE-FLY AUGMENTATION (train only)
-    # =========================================
+    # --- STEP 7: ON-THE-FLY AUGMENTATION (train only) ---
     # Stochastic augmentation applied to ALL training samples every epoch.
-    # Independent of oversample_config (which only augments balanced minority samples).
     train_augmentation:
-      enabled: true                        # Set true to enable general augmentation
+      enabled: true
       noise:
         enabled: true
-        std: 0.02                           # Gaussian noise standard deviation
+        std: 0.02
       scale:
         enabled: true
-        range: [0.9, 1.1]                   # Amplitude scaling range
+        range: [0.9, 1.1]
       shift:
         enabled: true
-        max_shift: 3                        # Max temporal shift in samples
-
+        max_shift: 3
 
   # =====================================================================
-  # UNET CONFIGURATION (Multihead Classifier)
+  # AUTOENCODER MODEL CONFIGURATION
   # =====================================================================
   model:
-    type: "UNetAutoencoder"           # "CNNAutoencoder", "UNetAutoencoder", "TransformerAutoencoder"
-    channels_per_layer: [32, 64, 128]       # 2x wider for more feature diversity (was [16, 32, 64])
-    embedding_dim: 256                # More room for reconstruction + classification (was 128)
-    num_heads: 8                   # For transformer models
-    num_layers: 4                  # For transformer models
+    type: "UNetAutoencoder"           # CNNAutoencoder | UNetAutoencoder
+    channels_per_layer: [32, 64, 128]
+    embedding_dim: 256
 
   # =====================================================================
-  # XGB CLASSIFIER CONFIGURATION (for embedding-based classification)
+  # XGB CLASSIFIER (embedding-based)
   # =====================================================================
   classifier:
     type: "XGBoost"
-    # NOTE: class_names should be loaded from preprocessing/label_logic/label_config.yaml
-    # This hardcoded list is deprecated and should be removed in favor of dynamic loading.
-    class_names: ["noise", "up", "down", "left", "right"]
-
-    # XGBoost hyperparameters
     xgboost:
-      n_estimators: 300              # More trees, early stopping finds optimum
+      n_estimators: 300
       max_depth: 6
-      learning_rate: 0.05            # Lower LR + more trees = better generalization
+      learning_rate: 0.05
       subsample: 0.8
       colsample_bytree: 0.8
-      reg_alpha: 0.1                 # Light L1 regularization
+      reg_alpha: 0.1
       reg_lambda: 1.0
-      min_child_weight: 3            # Prevents overfitting on small leaves
-      gamma: 0.1                     # Minimum loss reduction for split
-      early_stopping_rounds: 30      # More patience for convergence
-
-    # Embedding preprocessing
-    preprocessing:
-      normalize_embeddings: true
-      scaler: "standard"              # standard | minmax | none
-
-    # Hyperparameter tuning (optional)
-    hyperparameter_search:
-      enabled: false
-      method: "optuna"                # optuna | grid | random
-      n_trials: 50
+      min_child_weight: 3
+      gamma: 0.1
+      early_stopping_rounds: 30
 
   # =====================================================================
-  # CNN CLASSIFIER CONFIGURATION (DirectCNNClassifier)
+  # CNN CLASSIFIER (DirectCNNClassifier)
   # =====================================================================
   cnn:
     # Width multiplier: scales channel counts
-    #   1 = 16→32→64 channels,  ~48K params (default, lightweight)
-    #   2 = 32→64→128 channels, ~187K params (recommended, similar to USMModeCNN)
-    #   4 = 64→128→256 channels, ~740K params (large)
+    #   1 = 16->32->64   (~48K params)
+    #   2 = 32->64->128  (~187K params)
+    #   4 = 64->128->256  (~740K params)
     width_multiplier: 2
 
   # =====================================================================
   # TRAINING CONFIGURATION
   # =====================================================================
   training:
-    # Basic Training Parameters
     epochs: 200
-    lr: 0.0002                          # Higher LR paired with stronger regularization (was 0.00005)
-    weight_decay: 0.03                # Stronger weight decay for wider model (was 0.02)
+    lr: 0.0002
+    weight_decay: 0.03
 
-    # Optimizer Configuration
     optimizer:
       type: "adamw"                   # adamw, adam, sgd
-      betas: [0.9, 0.999]            # For Adam/AdamW
-      eps: 1e-8                      # For Adam/AdamW
-      momentum: 0.9                  # For SGD
+      betas: [0.9, 0.999]
+      eps: 1e-8
+      momentum: 0.9                   # For SGD
 
-    # Learning Rate Scheduler
     lr_scheduler:
       type: "cosine_warmup"           # plateau, onecycle, cosine, cosine_warmup, step, none
-      warmup_epochs: 5                # Linear warmup from 1% to full LR
-      eta_min: 1e-6                   # Minimum LR at end of cosine decay
+      warmup_epochs: 5
+      eta_min: 1e-6
 
-    # Loss Configuration
     loss_weights:
-      mse_weight: 0.2                  # Reduced reconstruction dominance (was 0.3)
-      l1_weight: 0.2                   # Reduced reconstruction dominance (was 0.3)
-      embedding_reg: 0.0001            # Less embedding constraint (was 0.0005)
-      classification_weight: 0.8       # More gradient budget for classification (was 0.6)
-      contrastive_weight: 0.1          # Supervised contrastive loss on embeddings (0.0 to disable)
-      contrastive_temperature: 0.1    # Temperature for cosine similarity scaling
+      mse_weight: 0.2
+      l1_weight: 0.2
+      embedding_reg: 0.0001
+      classification_weight: 0.8
+      contrastive_weight: 0.1
+      contrastive_temperature: 0.1
 
-    # Training Regularization
     regularization:
-      grad_clip_norm: 1.0            # Gradient clipping norm
-      batch_norm: true               # Use batch normalization
+      grad_clip_norm: 1.0
+      batch_norm: true
       dropout:
-        spatial: 0.3                 # Stronger regularization for wider model (was 0.2)
-        fc: 0.5                      # Stronger regularization for wider model (was 0.4)
+        spatial: 0.3
+        fc: 0.5
 
-    # Class Imbalance Handling
     imbalance:
       class_weights:
-        enabled: true                 # Enable class weighting in loss function
+        enabled: true
+        method: "inverse_frequency"     # inverse_frequency | effective_samples | sqrt_inverse | custom
+        power: 0.6                      # <1 gentle, =1 standard, >1 aggressive
+        custom_weights: null            # e.g., [0.1, 1.0, 1.0, 1.0, 1.0]
 
-        # Weighting method: how to compute weights from class counts
-        #   - inverse_frequency: weight = total / (n_classes * count)  [standard, recommended]
-        #   - effective_samples: weight = (1 - β^n) / (1 - β), β=0.999  [from "Class-Balanced Loss" paper]
-        #   - sqrt_inverse: weight = sqrt(total / count)  [less aggressive than inverse]
-        #   - custom: use custom_weights below
-        method: "inverse_frequency"
-
-        # Power scaling: adjusts how aggressively minority classes are weighted
-        #
-        # Given class distribution: Noise=90%, Movement=2.5% each (ratio ~36:1)
-        # Base inverse weights before power: Noise≈0.03, Movement≈1.0
-        #
-        #   power=0.5 (sqrt):  Noise=0.17, Move=1.0  → 6x difference   (gentle, may underfit minority)
-        #   power=1.0 (linear): Noise=0.03, Move=1.0  → 33x difference  (standard, balanced)
-        #   power=1.5 (aggressive): Noise=0.005, Move=1.0 → 200x difference (risks instability)
-        #
-        # Rule of thumb:
-        #   - power < 1.0: Use when minority classes have noisy labels or you want smoother training
-        #   - power = 1.0: Standard choice, theoretically optimal for clean labels
-        #   - power > 1.0: Use when minority classes are critical and you accept some majority degradation
-        power: 0.6                        # Less aggressive minority push, recover Noise acc (was 1.1)
-
-        # Custom weights (only used when method="custom")
-        # Order: [Noise, Up, Down, Left, Right]
-        custom_weights: null          # e.g., [0.1, 1.0, 1.0, 1.0, 1.0]
-
-    # Checkpointing
     checkpointing:
       save_best: true
-      save_every_n_epochs: 5        # Save regular checkpoint every N epochs
+      save_every_n_epochs: 5
       checkpoint_path: *train_base_data_path
 
-    # Restart Configuration
     restart:
       enable: true
-      save_restart_every: 5         # Save restart checkpoint every N epochs
+      save_restart_every: 5
 
-    # Validation and Evaluation
     validation:
-      plot_every_n_epochs: 2         # Generate plots every N epochs
+      plot_every_n_epochs: 2
 
-    # Early Stopping
     early_stopping:
-      enabled: true                  # Enable early stopping
-      patience: 30                   # More time for regularized model to train (was 20)
-      min_delta: 0.0005              # More sensitive to small improvements (was 0.001)
-      monitor: "val_balanced_accuracy"   # Metric to monitor: val_loss, val_accuracy, val_balanced_accuracy
+      enabled: true
+      patience: 30
+      min_delta: 0.0005
+      monitor: "val_balanced_accuracy"  # val_loss | val_accuracy | val_balanced_accuracy
 
 
 # ========================================
 # CROSS-VALIDATION CONFIGURATION
 # ========================================
-# For K-fold cross-validation experiments.
 # Use: python -m src.data.precompute_kfolds --config config/config.yaml
 #
-# This creates multiple fold directories, each with train_ds.pkl, val_ds.pkl, test_ds.pkl
-# The regular precompute_datasets.py creates a single split (non-CV mode).
-#
 cross_validation:
-  output_subdir: "cv_folds_test_P0"             # Folds saved to: {data_root}/{output_subdir}/fold_X/
+  output_subdir: "cv_folds_test_P0"
+  strategy: "participant_within"        # experiment_kfold | session_loso | participant_lopo | participant_within
 
-  # =========================================
-  # CV STRATEGY (choose one)
-  # =========================================
-  # Options:
-  #   - "experiment_kfold": K-fold over experiments within selected participant(s)
-  #   - "session_loso":     Leave-One-Session-Out
-  #   - "participant_lopo":   Leave-One-Participant-Out (cross-subject generalization)
-  #   - "participant_within": Within-participant modeling (subject-specific, no cross-subject)
-  strategy: "participant_within"
-
-  # =========================================
-  # STRATEGY 1: experiment_kfold
-  # =========================================
-  # K-fold cross-validation over experiments within specific participant(s).
-  # Use case: Evaluate model on same participant(s) with different experiment splits.
-  #
-  # Example: participant_filter=[1], n_folds=5
-  #   Participant 1 has 10 experiments → each fold holds out 2 experiments
-  #
   experiment_kfold:
-    participant_filter: null           # Which participant(s) to include [1,2] or null=all
-    session_filter: null                # Optionally filter sessions too
-    n_folds: 5                          # Number of folds
-    test_val_split_ratio: 0.5           # Within holdout: 50% test, 50% val
+    participant_filter: null
+    session_filter: null
+    n_folds: 5
+    test_val_split_ratio: 0.5
 
-  # =========================================
-  # STRATEGY 2: session_loso
-  # =========================================
-  # Leave-One-Session-Out cross-validation.
-  # Use case: Evaluate generalization across recording sessions.
-  #
-  # Example: 4 sessions → 4 folds, each holds out one session
-  #
   session_loso:
-    participant_filter: null            # Which participant(s) to include (null=all)
-    session_filter: null                # Which sessions to fold over (null=all available)
-    test_val_split_ratio: 0.5           # Within holdout session: 50% test, 50% val
+    participant_filter: null
+    session_filter: null
+    test_val_split_ratio: 0.5
 
-  # =========================================
-  # STRATEGY 3: participant_lopo
-  # =========================================
-  # Leave-One-Participant-Out cross-validation.
-  # Use case: Evaluate generalization to new participants.
-  #
-  # Example: 3 participants → 3 folds, each holds out one participant
-  #
   participant_lopo:
-    participant_filter: null            # Which participants to fold over (null=all)
-    test_val_split_ratio: 0.5           # Within holdout participant: 50% test, 50% val
+    participant_filter: null
+    test_val_split_ratio: 0.5
 
-  # =========================================
-  # STRATEGY 4: participant_within
-  # =========================================
-  # Within-participant cross-validation (subject-specific modeling).
-  # Each fold trains/val/tests on ONE participant's data independently.
-  #
-  # Use cases:
-  #   - Personalized models per subject
-  #   - Identify which subjects are easier/harder to classify
-  #   - Debug data quality issues per subject
-  #   - Establish upper bound before attempting cross-subject generalization
-  #
-  # Example: 4 participants → 4 folds
-  #   Fold 0: Train/val/test on Participant 1's data only
-  #   Fold 1: Train/val/test on Participant 2's data only
-  #   ...
-  #   Aggregated: Compare performance across participants
-  #
   participant_within:
-    participant_filter: null           # "all", null, single ID, or list of IDs [0, 1, 2]
-    inner_folds: null                    # K-fold CV within each participant (null or 1 = single split)
-    test_val_split_ratio: 0.5          # Split holdout into 50% val, 50% test
-    # Note: train_ratio is now determined by inner_folds (K-1)/K for training
+    participant_filter: null
+    inner_folds: null                   # K-fold within each participant (null = single split)
+    test_val_split_ratio: 0.5
 
 
 # ========================================
-# LOGGING CONFIGURATION
+# LOGGING
 # ========================================
 wandb:
   use_wandb: true
   project: "IEEE SAS 2026"
-  api_key: "c1842818a3c8db66c3f75d77b4640749e64cdc0d"
+  api_key: "c1842818a3c8db66c3f75d77b4640749e64cdc0d"    # TODO: move to env variable
   name: "embedding_autoencoder"
-  notes: "1DCNN for dimensionality reduction with comprehensive restart support"
-  tags:
-    - "embedding"
-    - "autoencoder"
-    - "ultrasound"
-    - "restart_enabled"
-
-  # Advanced WandB settings
   settings:
-    save_code: true
-    log_gradients: false             # Log gradient histograms
-    log_parameters: false            # Log parameter histograms
-    watch_model: true                # Watch model with wandb.watch()
+    watch_model: true
+
 
 # ========================================
-# EXPERIMENTAL CONFIGURATION
+# EXPERIMENT METADATA
 # ========================================
 experiment:
   name: "ultrasound_embedding_v1"
   description: "1DCNN autoencoder for ultrasound M-mode dimensionality reduction"
   version: "1.0.0"
 
-  # Reproducibility
-  reproducibility:
-    deterministic_algorithms: true    # Use deterministic algorithms when possible
-    benchmark_mode: false            # CUDNN benchmark mode
-
-  # Resource Management
   resources:
-    num_workers: 8                   # DataLoader workers
-    pin_memory: true                 # Pin memory for faster GPU transfer
-    prefetch_factor: 4               # DataLoader prefetch factor
-
-# ========================================
-# ADVANCED TRAINING OPTIONS
-# ========================================
-advanced:
-  # Mixed Precision Training
-  mixed_precision:
-    enable: false                    # Enable AMP (Automatic Mixed Precision)
-    loss_scale: "dynamic"            # dynamic or float value
-
-  # Distributed Training
-  distributed:
-    enable: false                    # Enable distributed training
-    backend: "nccl"                  # nccl, gloo
-    world_size: 1                    # Number of processes
-
-  # Profiling
-  profiling:
-    enable: false                    # Enable PyTorch profiler
-    trace_file: "trace.json"         # Profiler output file
+    num_workers: 8
+    pin_memory: true
+    prefetch_factor: 4
