@@ -76,7 +76,7 @@ preprocess:
 
     # Temporal differentiation (gradient along pulse/slow-time axis)
     differentiation:
-      apply: true                  # Set to true to use differentiated signal
+      apply: false                  # Set to true to use differentiated signal
       method: "gradient"            # gradient | diff
                                     # gradient: np.gradient (central differences, same length)
                                     # diff: np.diff (forward differences, length-1)
@@ -85,7 +85,7 @@ preprocess:
 
     # Percentile clipping (clip extreme values to reduce outlier impact)
     percentile_clip:
-      apply: true                 # Set to true to apply percentile clipping
+      apply: false                 # Set to true to apply percentile clipping
       percentile: 99               # Values beyond this percentile are clipped
       symmetric: true              # true: clip to [-p, +p] using abs values
                                    # false: clip positive/negative independently
