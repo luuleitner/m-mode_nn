@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Window20_Stride02_Labels_soft/latest"
+    train_base_data_path: &train_base_data_path "/home/cleitner/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Env_Dec10_Log50_Npeak_W18_S01_Lsoft/latest"
 
 
 # ========================================
