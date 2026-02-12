@@ -36,10 +36,11 @@ class ClassificationHead(nn.Module):
 
 class EncoderBlock(nn.Module):
     """
-    Encoder block: Conv (stride=2 downsample) + Conv (refine) with BatchNorm and LeakyReLU.
+    Encoder block: Conv (stride=2 downsample) + Conv (refine) with BatchNorm, LeakyReLU,
+    and optional spatial dropout (Dropout2d).
     """
 
-    def __init__(self, in_channels, out_channels, use_batchnorm=True):
+    def __init__(self, in_channels, out_channels, use_batchnorm=True, spatial_dropout=0.0):
         super().__init__()
 
         layers = [
@@ -53,6 +54,9 @@ class EncoderBlock(nn.Module):
         if use_batchnorm:
             layers.append(nn.BatchNorm2d(out_channels))
         layers.append(nn.LeakyReLU(0.2, inplace=True))
+
+        if spatial_dropout > 0:
+            layers.append(nn.Dropout2d(spatial_dropout))
 
         self.block = nn.Sequential(*layers)
 
@@ -128,6 +132,7 @@ class UNetAutoencoder(nn.Module):
         use_batchnorm: Whether to use batch normalization (default: True)
         num_classes: Number of classes for classification head (default: 3, set to 0 to disable)
         classifier_dropout: Dropout rate for classification head (default: 0.3)
+        spatial_dropout: Dropout2d rate for encoder blocks (default: 0.0, disabled)
     """
 
     def __init__(
@@ -140,6 +145,8 @@ class UNetAutoencoder(nn.Module):
         use_batchnorm: bool = True,
         num_classes: int = 3,
         classifier_dropout: float = 0.3,
+        spatial_dropout: float = 0.0,
+        skip_drop_prob: float = 0.0,
     ):
         super().__init__()
 
@@ -154,12 +161,13 @@ class UNetAutoencoder(nn.Module):
         self.use_batchnorm = use_batchnorm
         self.num_levels = len(channels)
         self.num_classes = num_classes
+        self.skip_drop_prob = skip_drop_prob
 
         # Build encoder blocks
         self.encoder_blocks = nn.ModuleList()
         ch_in = in_channels
         for ch_out in channels:
-            self.encoder_blocks.append(EncoderBlock(ch_in, ch_out, use_batchnorm))
+            self.encoder_blocks.append(EncoderBlock(ch_in, ch_out, use_batchnorm, spatial_dropout))
             ch_in = ch_out
 
         # Calculate bottleneck size
@@ -267,11 +275,12 @@ class UNetAutoencoder(nn.Module):
             for decoder_block, skip in zip(self.decoder_blocks, reversed_skips):
                 h = decoder_block(h, skip)
         else:
-            # No skip connections - reduced quality but still works
+            # No skip connections - forces embedding to carry all information
             for decoder_block in self.decoder_blocks:
-                # Create dummy skip of zeros (for inference without skips)
+                h = decoder_block.upsample(h)
                 dummy_skip = torch.zeros_like(h)
-                h = decoder_block(h, dummy_skip)
+                h = torch.cat([h, dummy_skip], dim=1)
+                h = decoder_block.conv(h)
 
         # Final upsample and output
         h = self.final_upsample(h)
@@ -294,7 +303,13 @@ class UNetAutoencoder(nn.Module):
             If classifier disabled: (reconstruction, embedding)
         """
         embedding, skips = self.encode_with_skips(x)
-        reconstruction = self.decode(embedding, skips)
+
+        # Skip dropout: during training, randomly drop ALL skip connections
+        # to force the embedding to carry spatial/structural information
+        if self.training and self.skip_drop_prob > 0 and torch.rand(1).item() < self.skip_drop_prob:
+            reconstruction = self.decode(embedding, skips=None)
+        else:
+            reconstruction = self.decode(embedding, skips)
 
         if self.classifier is not None:
             logits = self.classifier(embedding)

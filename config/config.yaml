@@ -19,7 +19,7 @@ global_setting:
   paths:
     base_data_path: &base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002"
     process_base_data_path: &process_base_data_path "/vol/data/2026_wristus_wiicontroller_sgambato/day002/processed"
-    train_base_data_path: &train_base_data_path "/home/cleitner/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Env_Dec10_Log50_Npeak_W18_S01_Lsoft/latest"
+    train_base_data_path: &train_base_data_path "/home/cleitner/data/2026_wristus_wiicontroller_sgambato/day002/processed/Dataset_Envelope_CNN/Env_Dec10_Log50_Npeak_D1_Pclip99_W18_S04_Lsoft/latest"
 
 
 # ========================================
@@ -67,25 +67,23 @@ preprocess:
     logcompression:
       apply: true
       db: 50
-    normalization:
-      apply: true
-      method: "peak"
-
     differentiation:
       apply: false                   # Temporal differentiation (gradient along pulse/slow-time axis)
       method: "gradient"             # gradient | diff
       order: 1                       # 1 = velocity, 2 = acceleration
-
     percentile_clip:
-      apply: false                   # Clip extreme values to reduce outlier impact
+      apply: false                  # Clip extreme values to reduce outlier impact
       percentile: 99
       symmetric: true                # true: clip to [-p, +p] using abs values
+    normalization:                    # Always last — ensures network sees a known, consistent range
+      apply: true
+      method: "peak"
 
   tokenization:
     tokens2file: true
     startendID: false
-    window: 18                        # Pulses per token
-    stride: 1                         # Pulse stride between tokens
+    window: 25                        # Pulses per token
+    stride: 5                         # Pulse stride between tokens
 
   output:
     mode: "flat"                      # flat: tokens saved individually, sequencing at dataset level
@@ -152,7 +150,7 @@ ml:
     #
     sequence_grouping:
       enabled: true
-      seq_len: 20                       # Tokens per sequence
+      seq_len: 14                       # Tokens per sequence
       seq_stride: 5                     # Stride between sequences (overlap = seq_len - seq_stride)
 
     # --- STEP 6: CLASS BALANCING (train only) ---
@@ -180,7 +178,7 @@ ml:
       enabled: true
       noise:
         enabled: true
-        std: 0.02
+        std: 0.05
       scale:
         enabled: true
         range: [0.9, 1.1]
@@ -195,6 +193,7 @@ ml:
     type: "UNetAutoencoder"           # CNNAutoencoder | UNetAutoencoder
     channels_per_layer: [32, 64, 128]
     embedding_dim: 256
+    skip_drop_prob: 0.5              # Probability of dropping ALL skip connections during training (0=full UNet, 1=vanilla AE)
 
   # =====================================================================
   # XGB CLASSIFIER (embedding-based)
@@ -278,7 +277,7 @@ ml:
 
     early_stopping:
       enabled: true
-      patience: 30
+      patience: 15
       min_delta: 0.0005
       monitor: "val_balanced_accuracy"  # val_loss | val_accuracy | val_balanced_accuracy
 
