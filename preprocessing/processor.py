@@ -713,14 +713,6 @@ class DataProcessor():
         if self._logcompression_flag:
             data = logcompression(data, self._logcompression_dbrange)
 
-        #---Normalization
-        if self._normalization_flag:
-            # Normalize Data
-            if self._normalization_technique == 'peak':
-                data  = peak_normalization(data)
-            if self._normalization_technique == 'peakZ':
-                data  = Z_normalization(peak_normalization(data))
-
         #---Differentiation (temporal gradient along pulse/slow-time axis)
         if self._differentiation_flag:
             # Apply differentiation along the pulse axis (axis=2)
@@ -747,6 +739,13 @@ class DataProcessor():
                 lower = np.percentile(data, 100 - self._percentile_clip_value)
                 data = np.clip(data, lower, upper)
             logger.info(f"Applied percentile clipping at {self._percentile_clip_value}th percentile (symmetric={self._percentile_clip_symmetric})")
+
+        #---Normalization (always last — ensures network sees a known, consistent range)
+        if self._normalization_flag:
+            if self._normalization_technique == 'peak':
+                data = peak_normalization(data)
+            if self._normalization_technique == 'peakZ':
+                data = Z_normalization(peak_normalization(data))
 
         return data
 

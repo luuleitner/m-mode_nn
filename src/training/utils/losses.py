@@ -30,15 +30,20 @@ def compute_classification_loss(logits, soft_labels, hard_labels, class_weights=
         loss: Scalar loss value
 
     Loss priority:
-        1. If soft_labels provided: soft cross-entropy (ignores class_weights)
-        2. If weighted=True and class_weights provided: weighted cross-entropy
+        1. If soft_labels provided: soft cross-entropy (with optional class weighting)
+        2. If wewehwwighted=True and class_weights provided: weighted cross-entropy
         3. Otherwise: standard unweighted cross-entropy
     """
     if soft_labels is not None:
         # Soft cross-entropy: -sum(p * log(q))
-        # Inherently handles class distribution through the soft labels themselves
         log_probs = F.log_softmax(logits, dim=-1)
-        loss = -(soft_labels * log_probs).sum(dim=-1).mean()
+        per_sample_loss = -(soft_labels * log_probs).sum(dim=-1)
+        if weighted and class_weights is not None:
+            # Weight each sample by its hard label's class weight (same as F.cross_entropy(weight=...))
+            sample_weights = class_weights[hard_labels]
+            loss = (per_sample_loss * sample_weights).sum() / sample_weights.sum()
+        else:
+            loss = per_sample_loss.mean()
     elif weighted and class_weights is not None:
         # Weighted cross-entropy for training with imbalanced classes
         loss = F.cross_entropy(logits, hard_labels, weight=class_weights)

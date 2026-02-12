@@ -159,6 +159,9 @@ def create_model(config):
     model_type = config.ml.model.type
     reg_config = config.get_regularization_config()
     use_batchnorm = reg_config.get('batch_norm', True)
+    dropout_config = reg_config.get('dropout', {})
+    spatial_dropout = dropout_config.get('spatial', 0.0)
+    classifier_dropout = dropout_config.get('fc', 0.3)
 
     # Check if classification is enabled (classification_weight > 0)
     loss_weights = config.get_loss_weights()
@@ -183,6 +186,8 @@ def create_model(config):
     if model_type == "UNetAutoencoder":
         from src.models.unet_ae import UNetAutoencoder
 
+        skip_drop_prob = getattr(config.ml.model, 'skip_drop_prob', 0.0)
+
         model = UNetAutoencoder(
             in_channels=3,
             input_height=input_pulses,  # Pulses (temporal)
@@ -190,8 +195,12 @@ def create_model(config):
             channels=config.ml.model.channels_per_layer,
             embedding_dim=config.ml.model.embedding_dim,
             use_batchnorm=use_batchnorm,
-            num_classes=num_classes
+            num_classes=num_classes,
+            classifier_dropout=classifier_dropout,
+            spatial_dropout=spatial_dropout,
+            skip_drop_prob=skip_drop_prob,
         )
+        logger.info(f"UNet regularization: spatial_dropout={spatial_dropout}, classifier_dropout={classifier_dropout}, skip_drop_prob={skip_drop_prob}")
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
