@@ -148,9 +148,9 @@ def compute_statistics(data_root):
     return df, summary
 
 
-def save_statistics(data_root, df, summary):
+def save_statistics(datasets_dir, df, summary):
     """Save statistics to files."""
-    stats_dir = os.path.join(data_root, 'stats')
+    stats_dir = os.path.join(datasets_dir, 'stats')
     os.makedirs(stats_dir, exist_ok=True)
 
     # Save detailed CSV
@@ -207,9 +207,13 @@ def precompute_datasets(config_path, force=False):
         logger.error("train_base_data_path not set in config")
         return False
 
-    train_path = os.path.join(data_root, 'train_ds.pkl')
-    val_path = os.path.join(data_root, 'val_ds.pkl')
-    test_path = os.path.join(data_root, 'test_ds.pkl')
+    # Write to datasets/single/ subdirectory
+    datasets_dir = os.path.join(data_root, 'datasets', 'single')
+    os.makedirs(datasets_dir, exist_ok=True)
+
+    train_path = os.path.join(datasets_dir, 'train_ds.pkl')
+    val_path = os.path.join(datasets_dir, 'val_ds.pkl')
+    test_path = os.path.join(datasets_dir, 'test_ds.pkl')
 
     # Check if files already exist
     all_exist = all(os.path.exists(p) for p in [train_path, val_path, test_path])
@@ -226,6 +230,7 @@ def precompute_datasets(config_path, force=False):
     logger.info("PRECOMPUTING DATASET SPLITS")
     logger.info("=" * 60)
     logger.info(f"Data root: {data_root}")
+    logger.info(f"Output:    {datasets_dir}")
 
     try:
         train_ds, test_ds, val_ds = create_filtered_split_datasets(
@@ -265,6 +270,22 @@ def precompute_datasets(config_path, force=False):
     logger.info(f"  Val sequences:   {train_info.get('val_size', 'N/A')}")
     logger.info(f"  Test sequences:  {train_info.get('test_size', 'N/A')}")
 
+    # Save split_info.json (mirrors CV's fold_info.json)
+    split_info = {
+        'split_type': 'single',
+        'train_batches': len(train_ds),
+        'val_batches': len(val_ds),
+        'test_batches': len(test_ds),
+        'train_sequences': train_info.get('train_size', 0),
+        'val_sequences': train_info.get('val_size', 0),
+        'test_sequences': train_info.get('test_size', 0),
+        'data_root': data_root,
+    }
+    split_info_path = os.path.join(datasets_dir, 'split_info.json')
+    with open(split_info_path, 'w') as f:
+        json.dump(split_info, f, indent=2)
+    logger.info(f"  Saved: {split_info_path}")
+
     # Print class weights if available
     try:
         class_weights = train_ds.get_class_weights()
@@ -299,7 +320,9 @@ def run_statistics(config_path):
     if df is None:
         return False
 
-    save_statistics(data_root, df, summary)
+    datasets_dir = os.path.join(data_root, 'datasets', 'single')
+    os.makedirs(datasets_dir, exist_ok=True)
+    save_statistics(datasets_dir, df, summary)
     print_statistics_summary(summary)
 
     return True

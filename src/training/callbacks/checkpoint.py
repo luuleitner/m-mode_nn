@@ -17,7 +17,7 @@ class CheckpointCallback(Callback):
 
     def __init__(self, save_dir, save_best=True, save_every_n_epochs=10,
                  save_restart_every=5, keep_n_checkpoints=3):
-        self.save_dir = save_dir
+        self._save_dir = save_dir
         self.save_best = save_best
         self.save_every_n_epochs = save_every_n_epochs
         self.save_restart_every = save_restart_every
@@ -26,7 +26,18 @@ class CheckpointCallback(Callback):
         self.best_val_loss = float('inf')
         self.best_checkpoint_path = None
 
-        os.makedirs(save_dir, exist_ok=True)
+        self.checkpoint_dir = os.path.join(save_dir, 'checkpoints')
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+
+    @property
+    def save_dir(self):
+        return self._save_dir
+
+    @save_dir.setter
+    def save_dir(self, value):
+        self._save_dir = value
+        self.checkpoint_dir = os.path.join(value, 'checkpoints')
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
 
     def on_train_begin(self, logs=None):
         """Initialize best loss from history if resuming."""
@@ -55,7 +66,7 @@ class CheckpointCallback(Callback):
         val_loss = logs.get('val_loss', float('inf'))
 
         self._save_checkpoint(
-            os.path.join(self.save_dir, 'final_checkpoint.pth'),
+            os.path.join(self.checkpoint_dir, 'final_checkpoint.pth'),
             epoch, val_loss, 'final'
         )
         logger.info("Final checkpoint saved")
@@ -70,19 +81,19 @@ class CheckpointCallback(Callback):
 
         self.best_val_loss = val_loss
         self.best_checkpoint_path = os.path.join(
-            self.save_dir, f'best_checkpoint_epoch_{epoch:04d}_loss_{val_loss:.6f}.pth'
+            self.checkpoint_dir, f'best_checkpoint_epoch_{epoch:04d}_loss_{val_loss:.6f}.pth'
         )
 
         self._save_checkpoint(self.best_checkpoint_path, epoch, val_loss, 'best')
         logger.info(f"New best model saved: loss {val_loss:.6f} at epoch {epoch + 1}")
 
     def _save_latest_checkpoint(self, epoch, val_loss):
-        path = os.path.join(self.save_dir, f'latest_checkpoint_{epoch:04d}.pth')
+        path = os.path.join(self.checkpoint_dir, f'latest_checkpoint_{epoch:04d}.pth')
         self._save_checkpoint(path, epoch, val_loss, 'latest')
         self._cleanup_old_checkpoints('latest_checkpoint_*.pth')
 
     def _save_restart_checkpoint(self, epoch, val_loss):
-        path = os.path.join(self.save_dir, f'restart_checkpoint_epoch_{epoch:03d}.pth')
+        path = os.path.join(self.checkpoint_dir, f'restart_checkpoint_epoch_{epoch:03d}.pth')
         self._save_checkpoint(path, epoch, val_loss, 'restart')
         self._cleanup_old_checkpoints('restart_checkpoint_*.pth')
 
@@ -106,7 +117,7 @@ class CheckpointCallback(Callback):
 
     def _cleanup_old_checkpoints(self, pattern):
         """Keep only the N most recent checkpoints matching pattern."""
-        checkpoints = glob.glob(os.path.join(self.save_dir, pattern))
+        checkpoints = glob.glob(os.path.join(self.checkpoint_dir, pattern))
 
         if len(checkpoints) > self.keep_n_checkpoints:
             checkpoints.sort(key=os.path.getmtime)
@@ -122,7 +133,7 @@ class CheckpointCallback(Callback):
     def find_latest_checkpoint(self):
         patterns = ['restart_checkpoint_*.pth', 'latest_checkpoint_*.pth', '*.pth']
         for pattern in patterns:
-            checkpoints = glob.glob(os.path.join(self.save_dir, pattern))
+            checkpoints = glob.glob(os.path.join(self.checkpoint_dir, pattern))
             if checkpoints:
                 return max(checkpoints, key=os.path.getmtime)
         return None

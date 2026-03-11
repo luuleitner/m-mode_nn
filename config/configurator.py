@@ -87,11 +87,28 @@ class ConfigurationManager:
     def get_process_data_root(self) -> str:
         return getattr(self.preprocess.data, 'basepath', '')  # Default to empty string if missing
 
-    def get_checkpoint_path(self) -> str:
-        path = getattr(self.ml.training.checkpointing, 'checkpoint_path', None)
-        if path:
-            return os.path.join(path, 'checkpoints')
+    def get_datasets_path(self) -> str:
+        """Get path for dataset caches: {data_root}/datasets"""
+        data_root = self.get_train_data_root()
+        if data_root:
+            return os.path.join(data_root, 'datasets')
         return None
+
+    def get_runs_path(self) -> str:
+        """Get path for training run outputs: {data_root}/runs"""
+        data_root = self.get_train_data_root()
+        if data_root:
+            return os.path.join(data_root, 'runs')
+        return None
+
+    def get_checkpoint_path(self) -> str:
+        """Deprecated: use get_runs_path() instead. Training scripts now manage their own paths."""
+        import warnings
+        warnings.warn(
+            "get_checkpoint_path() is deprecated. Use get_runs_path() instead.",
+            DeprecationWarning, stacklevel=2
+        )
+        return self.get_runs_path()
 
     def is_deterministic(self) -> bool:
         return self.global_setting.run.behaviour == "deterministic"
@@ -348,7 +365,7 @@ class ConfigurationManager:
         Post-initialization setup.
 
         Args:
-            create_dirs: If True, create checkpoint and data directories.
+            create_dirs: If True, create data directories.
                         Set to True only for training, not preprocessing.
         """
         # Set paths if not provided
@@ -360,14 +377,8 @@ class ConfigurationManager:
         if not self.get_process_data_root() and hasattr(self.global_setting.paths, 'process_base_data_path'):
             self.preprocess.data.process_data_root = self.global_setting.paths.process_base_data_path
 
-        if not self.get_checkpoint_path() and hasattr(self.global_setting.paths, 'process_base_data_path'):
-            self.ml.training.checkpoint_path = self.global_setting.paths.process_base_data_path
-
         # Only create directories when explicitly requested (e.g., during training)
         if create_dirs:
-            if self.get_checkpoint_path():
-                os.makedirs(self.get_checkpoint_path(), exist_ok=True)
-
             if self.get_train_data_root():
                 os.makedirs(self.get_train_data_root(), exist_ok=True)
 
@@ -386,9 +397,6 @@ class ConfigurationManager:
         # Check required paths
         if not self.get_train_data_root():
             issues.append("Data root path is not set")
-
-        if not self.get_checkpoint_path():
-            issues.append("Checkpoint path is not set")
 
         # Check training parameters
         if self.get_epochs() <= 0:

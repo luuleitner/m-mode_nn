@@ -55,12 +55,23 @@ class VisualizationCallback(Callback):
             log_to_wandb: Log plots to WandB if available
             class_names: List of class names for confusion matrix labels (default: from label_config)
         """
-        self.save_dir = save_dir
+        self._save_dir = save_dir
         self.plot_every_n_epochs = plot_every_n_epochs
         self.test_loader = test_loader
         self.log_to_wandb = log_to_wandb and WANDB_AVAILABLE
         self.class_names = class_names if class_names is not None else _DEFAULT_CLASS_NAMES
-        os.makedirs(save_dir, exist_ok=True)
+        self.plots_dir = os.path.join(save_dir, 'plots')
+        os.makedirs(self.plots_dir, exist_ok=True)
+
+    @property
+    def save_dir(self):
+        return self._save_dir
+
+    @save_dir.setter
+    def save_dir(self, value):
+        self._save_dir = value
+        self.plots_dir = os.path.join(value, 'plots')
+        os.makedirs(self.plots_dir, exist_ok=True)
 
     def set_test_loader(self, test_loader):
         self.test_loader = test_loader
@@ -196,7 +207,7 @@ class VisualizationCallback(Callback):
 
         plt.suptitle(f'Training Progress - Epoch {epoch + 1}', fontsize=14)
         plt.tight_layout()
-        save_path = os.path.join(self.save_dir, f'{prefix}training_curves_epoch_{epoch+1}.png')
+        save_path = os.path.join(self.plots_dir, f'{prefix}training_curves_epoch_{epoch+1}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"Training curves saved: {save_path}")
@@ -215,17 +226,17 @@ class VisualizationCallback(Callback):
             reconstruction = outputs[0]
 
         # Use adapter's visualization if available
-        save_path = os.path.join(self.save_dir, f'{prefix}reconstructions_epoch_{epoch+1}.png')
+        save_path = os.path.join(self.plots_dir, f'{prefix}reconstructions_epoch_{epoch+1}.png')
         if hasattr(self.trainer.adapter, 'visualize_reconstruction'):
             self.trainer.adapter.visualize_reconstruction(data, reconstruction, save_path)
             self._log_to_wandb('reconstructions/heatmaps', save_path, epoch)
 
         # GT / Prediction / Diff visualization
-        diff_path = os.path.join(self.save_dir, f'{prefix}gt_pred_diff_epoch_{epoch+1}.png')
+        diff_path = os.path.join(self.plots_dir, f'{prefix}gt_pred_diff_epoch_{epoch+1}.png')
         self._plot_gt_pred_diff(data, reconstruction, labels, diff_path, epoch)
 
         # Sample visualization
-        sample_path = os.path.join(self.save_dir, f'{prefix}samples_epoch_{epoch+1}.png')
+        sample_path = os.path.join(self.plots_dir, f'{prefix}samples_epoch_{epoch+1}.png')
         if hasattr(self.trainer.adapter, 'visualize_samples'):
             self.trainer.adapter.visualize_samples(data, reconstruction, sample_path)
             self._log_to_wandb('reconstructions/samples', sample_path, epoch)
@@ -367,7 +378,7 @@ class VisualizationCallback(Callback):
 
             plt.tight_layout()
 
-            save_path = os.path.join(self.save_dir, f'{prefix}confusion_matrix_{split}_epoch_{epoch+1}.png')
+            save_path = os.path.join(self.plots_dir, f'{prefix}confusion_matrix_{split}_epoch_{epoch+1}.png')
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             plt.close()
 
@@ -417,7 +428,7 @@ class VisualizationCallback(Callback):
         axes[1].grid(True, alpha=0.3)
 
         plt.tight_layout()
-        save_path = os.path.join(self.save_dir, f'{prefix}embeddings_epoch_{epoch+1}.png')
+        save_path = os.path.join(self.plots_dir, f'{prefix}embeddings_epoch_{epoch+1}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"Embedding analysis saved: {save_path}")

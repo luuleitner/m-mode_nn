@@ -21,8 +21,11 @@ import sys
 import argparse
 import pickle
 import yaml
+import json
+import shutil
 from datetime import datetime
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -290,13 +293,15 @@ def create_callbacks(config, results_dir, test_loader=None, num_classes=0):
 
 def load_or_create_datasets(config):
     """Load datasets from pickle or create new."""
-    pickle_path = config.get_train_data_root()
-    train_path = os.path.join(pickle_path, 'train_ds.pkl')
-    val_path = os.path.join(pickle_path, 'val_ds.pkl')
-    test_path = os.path.join(pickle_path, 'test_ds.pkl')
+    data_root = config.get_train_data_root()
+    datasets_dir = os.path.join(data_root, 'datasets', 'single')
+
+    train_path = os.path.join(datasets_dir, 'train_ds.pkl')
+    val_path = os.path.join(datasets_dir, 'val_ds.pkl')
+    test_path = os.path.join(datasets_dir, 'test_ds.pkl')
 
     if config.ml.loading.load_data_pickle:
-        logger.info("Loading datasets from pickle...")
+        logger.info(f"Loading datasets from pickle: {datasets_dir}")
         with open(train_path, 'rb') as f:
             train_ds = pickle.load(f)
         with open(val_path, 'rb') as f:
@@ -310,7 +315,8 @@ def load_or_create_datasets(config):
         )
 
         # Save for future use
-        logger.info("Saving datasets to pickle...")
+        os.makedirs(datasets_dir, exist_ok=True)
+        logger.info(f"Saving datasets to pickle: {datasets_dir}")
         with open(train_path, 'wb') as f:
             pickle.dump(train_ds, f)
         with open(val_path, 'wb') as f:
@@ -368,13 +374,36 @@ def create_dataloaders(train_ds, val_ds, test_ds, config):
 
 def main(config_path, restart=False):
     """Main training function."""
-    # Load config (create_dirs=True to create checkpoint directories)
-    config = load_config(config_path, create_dirs=True)
+    # Load config (create_dirs=False — we build our own directory structure)
+    config = load_config(config_path, create_dirs=False)
     setup_environment(config)
 
     logger.info("=" * 60)
     logger.info("TRAINING PIPELINE")
     logger.info("=" * 60)
+
+    # Build run directory: {data_root}/runs/unet_{timestamp}/fold_0/
+    data_root = config.get_train_data_root()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"unet_{timestamp}"
+    run_dir = os.path.join(data_root, 'runs', run_name)
+    fold_dir = os.path.join(run_dir, 'fold_0')
+    os.makedirs(fold_dir, exist_ok=True)
+
+    # Save config.yaml + run_config.json at run level
+    shutil.copy2(os.path.abspath(config_path), os.path.join(run_dir, 'config.yaml'))
+    run_config = {
+        'run_name': run_name,
+        'model_type': 'unet',
+        'mode': 'single',
+        'started_at': datetime.now().isoformat(),
+        'config_file': os.path.abspath(config_path),
+    }
+    with open(os.path.join(run_dir, 'run_config.json'), 'w') as f:
+        json.dump(run_config, f, indent=2)
+
+    logger.info(f"Run directory: {run_dir}")
+    logger.info(f"Fold directory: {fold_dir}")
 
     # Load data
     train_ds, val_ds, test_ds = load_or_create_datasets(config)
@@ -396,11 +425,8 @@ def main(config_path, restart=False):
     adapter = create_adapter(config)
     num_classes = getattr(model, 'num_classes', 0)
 
-    # Get results directory
-    results_base = config.get_checkpoint_path()
-
-    # Create callbacks with class names for WandB
-    callbacks = create_callbacks(config, results_base, test_loader, num_classes=num_classes)
+    # Create callbacks pointing directly at fold_dir
+    callbacks = create_callbacks(config, fold_dir, test_loader, num_classes=num_classes)
 
     # Create trainer
     trainer = BaseTrainer(
@@ -408,19 +434,8 @@ def main(config_path, restart=False):
         adapter=adapter,
         callbacks=callbacks,
         device=config.global_setting.run.device,
-        results_dir=results_base
+        results_dir=fold_dir
     )
-
-    # Update all callbacks with the trainer's timestamped results directory
-    # This ensures checkpoints, visualizations, and logs all go to the same run folder
-    for cb in trainer.callbacks.callbacks:
-        if isinstance(cb, VisualizationCallback):
-            cb.set_test_loader(test_loader)
-            cb.save_dir = trainer.results_dir
-        if isinstance(cb, CheckpointCallback):
-            cb.save_dir = trainer.results_dir
-        if isinstance(cb, WandBCallback):
-            cb.save_dir = trainer.results_dir
 
     # Get training parameters
     loss_weights = config.get_loss_weights()
@@ -474,7 +489,6 @@ def main(config_path, restart=False):
         if test_preds is not None and test_labels is not None:
             final_epoch = len(history['train_loss']) - 1
             for cb in trainer.callbacks.callbacks:
-                # Local visualization callback
                 if isinstance(cb, VisualizationCallback):
                     cb._plot_single_confusion_matrix(
                         epoch=final_epoch,
@@ -483,7 +497,6 @@ def main(config_path, restart=False):
                         split='test',
                         prefix='final_'
                     )
-                # WandB callback
                 if isinstance(cb, WandBCallback) and cb.enabled:
                     cb._plot_confusion_matrix(
                         epoch=final_epoch,
@@ -493,12 +506,38 @@ def main(config_path, restart=False):
                     )
             logger.info("Test confusion matrix saved")
 
+        # Save fold_results.json + test_predictions.npz in fold_0
+        fold_results = {
+            'fold_idx': 0,
+            'mode': 'single',
+            'best_val_loss': min(history['val_loss']) if history['val_loss'] else float('inf'),
+            'best_val_acc': max(history['val_accuracy']) if history.get('val_accuracy') else 0.0,
+            'total_epochs': len(history['train_loss']),
+        }
+        if 'test_accuracy' in test_metrics:
+            fold_results['test_accuracy'] = test_metrics['test_accuracy']
+            fold_results['test_balanced_accuracy'] = test_metrics.get('test_balanced_accuracy', 0.0)
+        if 'per_class_accuracy' in test_metrics:
+            fold_results['per_class_accuracy'] = {
+                CLASS_NAMES[k] if k < len(CLASS_NAMES) else f'class_{k}': v
+                for k, v in test_metrics['per_class_accuracy'].items()
+            }
+        with open(os.path.join(fold_dir, 'fold_results.json'), 'w') as f:
+            json.dump(fold_results, f, indent=2)
+
+        if 'predictions' in test_metrics:
+            np.savez(
+                os.path.join(fold_dir, 'test_predictions.npz'),
+                predictions=test_metrics['predictions'],
+                labels=test_metrics['labels'],
+                probabilities=test_metrics.get('probabilities', [])
+            )
+
         # Print summary
-        print_summary(history, test_metrics, trainer.results_dir)
+        print_summary(history, test_metrics, run_dir)
 
     except KeyboardInterrupt:
         logger.warning("Training interrupted by user")
-        # Emergency save handled by checkpoint callback
 
     except Exception as e:
         logger.error(f"Training failed: {e}")

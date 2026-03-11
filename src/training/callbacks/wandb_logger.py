@@ -66,7 +66,7 @@ class WandBCallback(Callback):
         self.project = project
         self.config = config or {}
         self.name = name
-        self.save_dir = save_dir
+        self._save_dir = save_dir
         self.log_every_n_batches = log_every_n_batches
         self.watch_model = watch_model
         self.api_key = api_key
@@ -76,6 +76,21 @@ class WandBCallback(Callback):
         self.enabled = WANDB_AVAILABLE
         self._run = None
         self._batch_step = 0
+
+        self.plots_dir = os.path.join(save_dir, 'plots') if save_dir else None
+        if self.plots_dir:
+            os.makedirs(self.plots_dir, exist_ok=True)
+
+    @property
+    def save_dir(self):
+        return self._save_dir
+
+    @save_dir.setter
+    def save_dir(self, value):
+        self._save_dir = value
+        self.plots_dir = os.path.join(value, 'plots') if value else None
+        if self.plots_dir:
+            os.makedirs(self.plots_dir, exist_ok=True)
 
     def on_train_begin(self, logs=None):
         if not self.enabled:
@@ -296,7 +311,7 @@ class WandBCallback(Callback):
             plt.tight_layout()
 
             # Save and log
-            save_path = os.path.join(self.save_dir, f'confusion_matrix_{split}_epoch_{epoch+1}.png')
+            save_path = os.path.join(self.plots_dir, f'confusion_matrix_{split}_epoch_{epoch+1}.png')
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             plt.close()
 
