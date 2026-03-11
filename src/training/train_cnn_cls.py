@@ -23,6 +23,8 @@ import sys
 import argparse
 import pickle
 import yaml
+import json
+import shutil
 from datetime import datetime
 
 import torch
@@ -952,16 +954,18 @@ class DirectClassifierTrainer:
 
 def load_datasets(config, data_dir=None):
     """Load or create train/val/test datasets."""
-    # Use provided data_dir or fall back to config
+    # Use provided data_dir or fall back to datasets/single/
     if data_dir:
         pickle_path = data_dir
     else:
-        pickle_path = config.get_train_data_root().strip()
+        data_root = config.get_train_data_root().strip()
+        pickle_path = os.path.join(data_root, 'datasets', 'single')
 
     if not pickle_path or not os.path.isdir(pickle_path):
         raise ValueError(
             f"Invalid data directory: '{pickle_path}'\n"
-            "Please specify --data-dir or set train_base_data_path in config.yaml"
+            "Please run 'python -m src.data.precompute_datasets --config config.yaml' first,\n"
+            "or specify --data-dir."
         )
 
     train_path = os.path.join(pickle_path, 'train_ds.pkl')
@@ -972,7 +976,6 @@ def load_datasets(config, data_dir=None):
     load_from_pickle = config.ml.loading.get('load_data_pickle', True) if hasattr(config.ml.loading, 'get') else getattr(config.ml.loading, 'load_data_pickle', True)
 
     if load_from_pickle:
-        # Load existing pickle files
         for path, name in [(train_path, 'Train'), (val_path, 'Validation'), (test_path, 'Test')]:
             if not os.path.exists(path):
                 raise FileNotFoundError(
@@ -989,13 +992,12 @@ def load_datasets(config, data_dir=None):
         with open(test_path, 'rb') as f:
             test_ds = pickle.load(f)
     else:
-        # Create datasets from H5 files
         logger.info("Creating datasets from H5 files...")
         train_ds, test_ds, val_ds = create_filtered_split_datasets(
             **config.get_dataset_parameters()
         )
 
-        # Save for future use
+        os.makedirs(pickle_path, exist_ok=True)
         logger.info(f"Saving datasets to pickle: {pickle_path}")
         with open(train_path, 'wb') as f:
             pickle.dump(train_ds, f)
@@ -1119,13 +1121,33 @@ def main():
 
     model.print_architecture()
 
-    # Determine output directory
+    # Determine output directory: {data_root}/runs/cnn_{timestamp}/fold_0/
     if args.output_dir:
         output_dir = args.output_dir
+        run_dir = os.path.dirname(output_dir)
     else:
+        data_root = config.get_train_data_root().strip()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_dir = data_dir if data_dir else config.get_train_data_root().strip()
-        output_dir = os.path.join(base_dir, f'direct_cnn_{timestamp}')
+        run_name = f"cnn_{timestamp}"
+        run_dir = os.path.join(data_root, 'runs', run_name)
+        output_dir = os.path.join(run_dir, 'fold_0')
+
+    os.makedirs(run_dir, exist_ok=True)
+
+    # Save config.yaml + run_config.json at run level
+    shutil.copy2(os.path.abspath(args.config), os.path.join(run_dir, 'config.yaml'))
+    run_config_data = {
+        'run_name': os.path.basename(run_dir),
+        'model_type': 'cnn',
+        'mode': 'single',
+        'started_at': datetime.now().isoformat(),
+        'config_file': os.path.abspath(args.config),
+    }
+    with open(os.path.join(run_dir, 'run_config.json'), 'w') as f:
+        json.dump(run_config_data, f, indent=2)
+
+    logger.info(f"Run directory: {run_dir}")
+    logger.info(f"Fold directory: {output_dir}")
 
     # Create data loaders
     resource_cfg = config.get_resource_config()
@@ -1161,6 +1183,33 @@ def main():
         test_loader=test_loader,
         restart=args.restart
     )
+
+    # Save fold_results.json for consistency with CV layout
+    fold_results = {
+        'fold_idx': 0,
+        'mode': 'single',
+        'best_val_loss': trainer.best_val_loss,
+        'best_val_acc': trainer.best_val_acc,
+        'best_val_balanced_acc': trainer.best_val_balanced_acc,
+        'best_epoch': trainer.best_epoch,
+        'total_epochs': trainer.current_epoch + 1,
+    }
+    # Load test predictions for metrics
+    test_pred_path = os.path.join(output_dir, 'test_predictions.npz')
+    if os.path.exists(test_pred_path):
+        test_data = np.load(test_pred_path)
+        predictions = test_data['predictions']
+        labels = test_data['labels']
+        fold_results['test_accuracy'] = float((predictions == labels).mean())
+        per_class_acc = {}
+        for cls in range(model.num_classes):
+            mask = labels == cls
+            if mask.sum() > 0:
+                per_class_acc[CLASS_NAMES[cls]] = float((predictions[mask] == cls).mean())
+        fold_results['per_class_accuracy'] = per_class_acc
+
+    with open(os.path.join(output_dir, 'fold_results.json'), 'w') as f:
+        json.dump(fold_results, f, indent=2)
 
     return 0
 

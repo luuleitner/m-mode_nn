@@ -9,6 +9,7 @@ from matplotlib import pyplot as plt
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
 import plotly.io as pio
 pio.renderers.default = 'browser'
 
@@ -342,9 +343,10 @@ ACTIVE_LABELS = list(range(5)) if _INCLUDE_NOISE else list(range(1, 5))
 
 
 
-config_path = os.path.join('/config/config.yaml')
+config_path = os.path.join(project_root, 'config', 'config.yaml')
 processor = DataProcessor(config_file=config_path, auto_run=False)
-exp_path = '/scratch/US_EMG_preprocessing/session14_exp0'
+script_dir = os.path.dirname(os.path.abspath(__file__))
+exp_path = os.path.join(script_dir, 'session14_exp0')
 USdata = processor.process_single_experiment(exp_path)
 
 from include.emg.emg_processing.filter import Butter
@@ -355,7 +357,7 @@ fs_us = 175
 fs_emg = 2048
 
 
-EMGdata_path = '/scratch/US_EMG_preprocessing/session14_exp0/exp1.csv'
+EMGdata_path = os.path.join(exp_path, 'exp1.csv')
 EMGtrigger = pd.read_csv(EMGdata_path).iloc[:,5]
 EMGdata = pd.read_csv(EMGdata_path).iloc[:,2:5]
 columns = ['ch1', 'ch2', 'ch3']
@@ -582,7 +584,7 @@ for ch in range(3):
     # EMG time-domain overlay (mapped to US time frame, same as combined plot)
     t_emg_spec = np.linspace(0, us_duration, EMGdata_notched.shape[0])
     ax_ts = axes_spec[ch, 0].twinx()
-    ax_ts.plot(t_emg_spec, EMGdata_notched[:, ch], color='white', alpha=0.3, linewidth=0.4)
+    ax_ts.plot(t_emg_spec, EMGdata_notched[:, ch], color='white', alpha=0.3, linewidth=0.4, label='EMG')
     ylim_ts = max(abs(EMGdata_notched[:, ch].min()), abs(EMGdata_notched[:, ch].max()))
     ax_ts.set_ylim(-ylim_ts * 2, ylim_ts * 2)
     ax_ts.set_ylabel('Amp', color='white', fontsize=8)
@@ -610,10 +612,11 @@ for ch in range(3):
 
     # EMG overlay
     ax_ts2 = axes_spec[ch, 1].twinx()
-    ax_ts2.plot(t_emg_spec, EMGdata_notched[:, ch], color='white', alpha=0.3, linewidth=0.4)
+    ax_ts2.plot(t_emg_spec, EMGdata_notched[:, ch], color='white', alpha=0.3, linewidth=0.4, label='EMG')
     ax_ts2.set_ylim(-ylim_ts * 2, ylim_ts * 2)
     ax_ts2.set_ylabel('Amp', color='white', fontsize=8)
     ax_ts2.tick_params(axis='y', labelcolor='white', labelsize=7)
+
 
 axes_spec[2, 0].set_xlabel('Time [s]')
 axes_spec[2, 1].set_xlabel('Time [s]')

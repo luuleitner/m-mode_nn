@@ -17,7 +17,11 @@ class RestartManager:
         self.checkpoint_dir = checkpoint_dir
 
     def find_latest_checkpoint(self):
-        """Find most recent checkpoint. Priority: restart > latest > best > any."""
+        """Find most recent checkpoint. Priority: restart > latest > best > any.
+
+        Searches checkpoints/ subdirectory first, then falls back to flat
+        directory for legacy runs.
+        """
         if not os.path.exists(self.checkpoint_dir):
             logger.warning(f"Checkpoint directory not found: {self.checkpoint_dir}")
             return None
@@ -29,11 +33,22 @@ class RestartManager:
             '*.pth'
         ]
 
+        # Search checkpoints/ subdir first (new layout)
+        ckpt_subdir = os.path.join(self.checkpoint_dir, 'checkpoints')
+        if os.path.exists(ckpt_subdir):
+            for pattern in patterns:
+                checkpoints = glob.glob(os.path.join(ckpt_subdir, pattern))
+                if checkpoints:
+                    latest = max(checkpoints, key=os.path.getmtime)
+                    logger.info(f"Found checkpoint: {latest}")
+                    return latest
+
+        # Fall back to flat directory (legacy layout)
         for pattern in patterns:
             checkpoints = glob.glob(os.path.join(self.checkpoint_dir, pattern))
             if checkpoints:
                 latest = max(checkpoints, key=os.path.getmtime)
-                logger.info(f"Found checkpoint: {latest}")
+                logger.info(f"Found checkpoint (legacy layout): {latest}")
                 return latest
 
         logger.info(f"No checkpoints found in: {self.checkpoint_dir}")

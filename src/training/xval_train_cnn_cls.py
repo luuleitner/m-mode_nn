@@ -25,7 +25,7 @@ Usage:
     python -m src.training.train_cnn_cls_cv --config config/config.yaml --cv-dir /path/to/cv_folds
 
     # Aggregate results only (after parallel fold training)
-    python -m src.training.train_cnn_cls_cv --config config/config.yaml --run-name run_20260131_143052 --aggregate-only
+    python -m src.training.train_cnn_cls_cv --config config/config.yaml --run-name cnn_20260131_143052 --aggregate-only
 
     # List previous training runs
     python -m src.training.train_cnn_cls_cv --config config/config.yaml --list-runs
@@ -303,7 +303,7 @@ Examples:
   python -m src.training.train_cnn_cls_cv --config config/config.yaml --fold 0
 
   # Aggregate results after parallel training (specify run name)
-  python -m src.training.train_cnn_cls_cv --config config/config.yaml --run-name run_20260131_143052 --aggregate-only
+  python -m src.training.train_cnn_cls_cv --config config/config.yaml --run-name cnn_20260131_143052 --aggregate-only
 
   # List previous training runs
   python -m src.training.train_cnn_cls_cv --config config/config.yaml --list-runs
@@ -338,16 +338,19 @@ Examples:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
 
-    # Resolve CV directory
+    # Resolve CV directory (auto-precompute if missing)
     try:
-        cv_dir = resolve_cv_directory(config, args.cv_dir)
-    except FileNotFoundError as e:
+        cv_dir = resolve_cv_directory(config, args.cv_dir,
+                                      auto_precompute=True, config_path=args.config)
+    except (FileNotFoundError, RuntimeError) as e:
         logger.error(str(e))
         return 1
 
     # Mode: list runs
     if args.list_runs:
-        list_training_runs(cv_dir)
+        data_root = config.get_train_data_root()
+        runs_dir = os.path.join(data_root, 'runs')
+        list_training_runs(runs_dir)
         return 0
 
     # Discover folds
@@ -368,15 +371,17 @@ Examples:
         logger.info(f"CV Strategy: {cv_run_config.get('strategy', 'unknown')}")
 
     # Resolve run name
-    run_name = resolve_run_name(args.run_name, prefix="run")
-    run_dir = os.path.join(cv_dir, run_name)
+    data_root = config.get_train_data_root()
+    run_name = resolve_run_name(args.run_name, prefix="cnn")
+    run_dir = os.path.join(data_root, 'runs', run_name)
 
     # Mode: aggregate only
     if args.aggregate_only:
         if not os.path.exists(run_dir):
             logger.error(f"Run directory not found: {run_dir}")
             logger.error("Specify an existing run with --run-name or train first")
-            list_training_runs(cv_dir)
+            runs_dir = os.path.join(data_root, 'runs')
+            list_training_runs(runs_dir)
             return 1
 
         logger.info(f"Aggregating results from: {run_dir}")
@@ -389,7 +394,7 @@ Examples:
         return 0
 
     # Setup run directory
-    run_dir = setup_run_directory(cv_dir, run_name, args.config, extra_metadata={
+    run_dir = setup_run_directory(data_root, run_name, args.config, extra_metadata={
         'n_folds': n_folds,
         'fold': args.fold,
         'restart': args.restart,

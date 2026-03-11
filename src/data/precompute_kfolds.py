@@ -457,8 +457,8 @@ def precompute_kfolds(config_path, strategy=None, n_folds=None, force=False):
             cv_config['experiment_kfold'] = {}
         cv_config['experiment_kfold']['n_folds'] = n_folds
 
-    # Output directory
-    output_dir = os.path.join(data_root, output_subdir)
+    # Output directory: datasets/{output_subdir}
+    output_dir = os.path.join(data_root, 'datasets', output_subdir)
 
     # Check if folds already exist (recursive glob handles both flat and nested layouts)
     if os.path.exists(output_dir) and not force:
