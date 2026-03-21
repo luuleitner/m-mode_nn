@@ -47,8 +47,8 @@ sys.path.insert(0, project_root)
 
 from config.configurator import load_config
 from preprocessing.label_logic.label_logic import (
-    create_position_peak_labels,
-    create_5class_position_peak_labels
+    label_movements,
+    label_movements_xy
 )
 from preprocessing.signal_utils import apply_joystick_filters
 
@@ -84,15 +84,10 @@ class PickleTokenVisualizer:
         if os.path.exists(label_config_path):
             with open(label_config_path, 'r') as f:
                 label_config = yaml.safe_load(f)
-            self.label_method = label_config.get('method', 'position_peak')
+            self.label_method = label_config.get('method', 'segment_classify')
             self.label_axis = label_config.get('axis', 'dual')
             self.filters_config = label_config.get('filters', {})
-            # Position peak config
-            pp_config = label_config.get('position_peak', {})
-            self.pp_deriv_thresh = pp_config.get('deriv_threshold_percent', 10.0)
-            self.pp_pos_thresh = pp_config.get('pos_threshold_percent', 5.0)
-            self.pp_peak_window = pp_config.get('peak_window', 3)
-            self.pp_timeout = pp_config.get('timeout_samples', 500)
+            self.sc_config = label_config.get('segment_classify', {})
             # Class configuration
             classes_config = label_config.get('classes', {})
             self.include_noise = classes_config.get('include_noise', True)
@@ -103,13 +98,10 @@ class PickleTokenVisualizer:
             }
             self.class_colors = ['gray', 'green', 'red', 'blue', 'orange']
         else:
-            self.label_method = 'position_peak'
+            self.label_method = 'segment_classify'
             self.label_axis = 'dual'
             self.filters_config = {}
-            self.pp_deriv_thresh = 10.0
-            self.pp_pos_thresh = 5.0
-            self.pp_peak_window = 3
-            self.pp_timeout = 500
+            self.sc_config = {}
             self.include_noise = True
             self.num_classes = 5
             self.class_names = {0: 'Noise', 1: 'Up', 2: 'Down', 3: 'Left', 4: 'Right'}
@@ -201,12 +193,11 @@ class PickleTokenVisualizer:
         if self.filters_config:
             y_derivative = apply_joystick_filters(y_derivative, self.filters_config, 'derivative')
 
-        # Create 5-class labels using both axes
-        labels, thresholds, markers = create_5class_position_peak_labels(
+        # Create 5-class labels using segment-classify
+        labels, segments, params = label_movements_xy(
             x_position, y_position,
             x_derivative, y_derivative,
-            self.pp_deriv_thresh, self.pp_pos_thresh,
-            self.pp_peak_window, self.pp_timeout
+            self.sc_config
         )
 
         return {
@@ -216,8 +207,8 @@ class PickleTokenVisualizer:
             'y_position': y_position,
             'y_derivative': y_derivative,
             'thresholds': thresholds,
-            'x_markers': markers.get('x', {}),
-            'y_markers': markers.get('y', {})
+            'segments': segments,
+            'params': params
         }
 
     def load_random_sample(self, split='train', seed=None, augmented_only=False,

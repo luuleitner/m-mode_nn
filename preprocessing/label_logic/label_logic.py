@@ -1,12 +1,15 @@
 """
-Position Peak Label Logic
+Segment-then-Classify Label Logic
 
-Labels movement periods using a three-phase state machine:
-  Phase 1 (IDLE → RISING): |velocity| > threshold AND |position| < center threshold
-  Phase 2 (RISING → PEAKED): position reverses (starts returning to center)
-  Phase 3 (PEAKED → IDLE): |velocity| < threshold
+Two-pass approach for labeling joystick movements:
+  Pass 1 (detect_movements): position-based activity detection
+    - Smooth |position| with moving average
+    - Threshold to find active regions (joystick deflected from center)
+    - Cleanup: remove short segments, merge close ones
 
-This explicitly tracks the position peak (turning point) for robust detection.
+  Pass 2 (label_movements): peak-displacement classification
+    - For each segment, find peak |position|
+    - Direction = sign of peak position
 
 For visualization, use: preprocessing/visualization/visualize_labels.py
 """
@@ -23,278 +26,221 @@ _label_config_path = os.path.join(_script_dir, "label_config.yaml")
 try:
     with open(_label_config_path, 'r') as f:
         _label_config = yaml.safe_load(f)
-    _position_peak_config = _label_config.get('position_peak', {})
+    _sc_config = _label_config.get('segment_classify', {})
 except FileNotFoundError:
-    _position_peak_config = {}
+    _sc_config = {}
 
-# Default thresholds from config
-DEFAULT_DERIV_THRESH = _position_peak_config.get('deriv_threshold_percent', 10.0)
-DEFAULT_POS_THRESH = _position_peak_config.get('pos_threshold_percent', 5.0)
-DEFAULT_PEAK_WINDOW = _position_peak_config.get('peak_window', 3)
-DEFAULT_TIMEOUT = _position_peak_config.get('timeout_samples', 500)
-
-# State constants
-STATE_IDLE = 0
-STATE_RISING = 1
-STATE_PEAKED = 2
+DEFAULT_ACTIVITY_THRESH = _sc_config.get('activity_threshold_percent', 5.0)
+DEFAULT_SMOOTH_WINDOW = _sc_config.get('smooth_window', 15)
+DEFAULT_MIN_DURATION = _sc_config.get('min_duration', 10)
+DEFAULT_MERGE_GAP = _sc_config.get('merge_gap', 10)
 
 
-def create_position_peak_labels(
-    position,
-    velocity,
-    deriv_threshold_percent=None,
-    pos_threshold_percent=None,
-    peak_window=None,
-    timeout_samples=None
-):
+# ──────────────────────────────────────────────────────────
+# Internal helpers
+# ──────────────────────────────────────────────────────────
+
+def smooth_activity(position, smooth_window):
+    """Compute smoothed |position| as activity signal."""
+    raw_activity = np.abs(position)
+    kernel = np.ones(smooth_window) / smooth_window
+    return np.convolve(raw_activity, kernel, mode='same')
+
+
+def segment_activity(activity, threshold, min_duration, merge_gap):
     """
-    Label movements using three-phase position peak detection.
+    Convert activity signal into clean movement segments.
 
-    Phase 1 (IDLE → RISING): |velocity| > threshold AND |position| < center threshold
-    Phase 2 (RISING → PEAKED): position reverses direction
-    Phase 3 (PEAKED → IDLE): |velocity| < threshold
-
-    Args:
-        position: Filtered joystick position signal [n]
-        velocity: Filtered derivative of position [n]
-        deriv_threshold_percent: Threshold for |velocity| as % of range
-        pos_threshold_percent: Position must be within ±this% of range from center
-        peak_window: Number of samples to confirm position reversal (noise filter)
-        timeout_samples: Max samples in any phase before forcing transition
+    1. Binary mask: activity > threshold
+    2. Extract contiguous active regions
+    3. Merge regions closer than merge_gap
+    4. Remove regions shorter than min_duration
 
     Returns:
-        labels: [n] array, 0=noise, 1=positive movement, 2=negative movement
-        thresholds: dict with threshold values
-        markers: dict with start/peak/stop/rejected markers
+        segments: list of (start, stop) tuples
+        debug: dict with intermediate results
     """
-    # Use config defaults if not specified
-    if deriv_threshold_percent is None:
-        deriv_threshold_percent = DEFAULT_DERIV_THRESH
-    if pos_threshold_percent is None:
-        pos_threshold_percent = DEFAULT_POS_THRESH
-    if peak_window is None:
-        peak_window = DEFAULT_PEAK_WINDOW
-    if timeout_samples is None:
-        timeout_samples = DEFAULT_TIMEOUT
+    active = activity > threshold
+    diff = np.diff(np.concatenate([[0], active.astype(int), [0]]))
+    starts = np.where(diff == 1)[0]
+    stops = np.where(diff == -1)[0]
 
-    n = len(position)
-    labels = np.zeros(n, dtype=np.int64)
+    if len(starts) == 0:
+        return [], {'active_mask': active, 'raw_segments': [], 'merged_segments': []}
 
-    # Compute thresholds
-    vel_range = np.max(np.abs(velocity))
-    pos_range = max(abs(position.max()), abs(position.min()))
+    raw_segments = list(zip(starts.tolist(), stops.tolist()))
 
-    deriv_threshold = deriv_threshold_percent / 100.0 * vel_range
-    pos_threshold = pos_threshold_percent / 100.0 * pos_range
+    # Merge close segments
+    merged_starts, merged_stops = [starts[0]], [stops[0]]
+    for i in range(1, len(starts)):
+        if starts[i] - merged_stops[-1] < merge_gap:
+            merged_stops[-1] = stops[i]
+        else:
+            merged_starts.append(starts[i])
+            merged_stops.append(stops[i])
 
-    # Track markers
-    start_markers = []
-    peak_markers = []
-    stop_markers = []
-    rejected_markers = []
-    timeout_markers = []
+    merged_segments = list(zip(merged_starts, merged_stops))
 
-    # State tracking
-    state = STATE_IDLE
-    start_idx = 0
-    direction = 0
-    peak_idx = 0
-    max_position = 0  # Track extreme position for peak detection
-    samples_in_state = 0
+    # Remove short segments
+    segments = [
+        (s, e) for s, e in merged_segments
+        if e - s >= min_duration
+    ]
 
-    i = 0
-    while i < n:
-        vel = velocity[i]
-        pos = position[i]
-        abs_vel = abs(vel)
-        abs_pos = abs(pos)
-        samples_in_state += 1
-
-        if state == STATE_IDLE:
-            # Phase 1: Check for movement start
-            if abs_vel > deriv_threshold:
-                # Validate: position must be near center
-                if abs_pos > pos_threshold:
-                    rejected_markers.append(i)
-                    i += 1
-                    continue
-
-                # Valid start - transition to RISING
-                state = STATE_RISING
-                start_idx = i
-                direction = 1 if vel > 0 else 2  # 1=positive, 2=negative
-                max_position = pos
-                samples_in_state = 0
-                start_markers.append(i)
-
-        elif state == STATE_RISING:
-            # Phase 2: Monitor position for peak (reversal)
-
-            # Update extreme position
-            if direction == 1:  # positive movement (going up/right)
-                if pos > max_position:
-                    max_position = pos
-                    peak_idx = i
-            else:  # negative movement (going down/left)
-                if pos < max_position:
-                    max_position = pos
-                    peak_idx = i
-
-            # Check for position reversal (peak detected)
-            # Use window to filter noise: position must be reversing for peak_window samples
-            reversal_detected = False
-            if i >= peak_window:
-                if direction == 1:
-                    # Positive: peak when position consistently decreasing
-                    reversal_detected = all(
-                        position[i - j] < position[i - j - 1]
-                        for j in range(peak_window)
-                    )
-                else:
-                    # Negative: peak when position consistently increasing
-                    reversal_detected = all(
-                        position[i - j] > position[i - j - 1]
-                        for j in range(peak_window)
-                    )
-
-            if reversal_detected:
-                # Transition to PEAKED
-                state = STATE_PEAKED
-                peak_markers.append(peak_idx)
-                samples_in_state = 0
-
-            elif samples_in_state >= timeout_samples:
-                # Timeout in RISING phase - force end
-                labels[start_idx:i] = direction
-                stop_markers.append(i)
-                timeout_markers.append(i)
-                state = STATE_IDLE
-                samples_in_state = 0
-
-        elif state == STATE_PEAKED:
-            # Phase 3: Wait for velocity to settle below threshold
-            if abs_vel < deriv_threshold:
-                # Movement complete - apply labels
-                labels[start_idx:i] = direction
-                stop_markers.append(i)
-                state = STATE_IDLE
-                samples_in_state = 0
-
-            elif samples_in_state >= timeout_samples:
-                # Timeout in PEAKED phase - force end
-                labels[start_idx:i] = direction
-                stop_markers.append(i)
-                timeout_markers.append(i)
-                state = STATE_IDLE
-                samples_in_state = 0
-
-        i += 1
-
-    # Handle case where movement extends to end of signal
-    if state != STATE_IDLE:
-        labels[start_idx:n] = direction
-        stop_markers.append(n - 1)
-        timeout_markers.append(n - 1)
-
-    thresholds = {
-        'deriv': deriv_threshold,
-        'pos': pos_threshold,
-        'deriv_percent': deriv_threshold_percent,
-        'pos_percent': pos_threshold_percent,
-        'peak_window': peak_window,
-        'timeout': timeout_samples
+    debug = {
+        'active_mask': active,
+        'raw_segments': raw_segments,
+        'merged_segments': merged_segments,
     }
 
-    markers = {
-        'start': np.array(start_markers, dtype=int),
-        'peak': np.array(peak_markers, dtype=int),
-        'stop': np.array(stop_markers, dtype=int),
-        'rejected': np.array(rejected_markers, dtype=int),
-        'timeout': np.array(timeout_markers, dtype=int)
-    }
-
-    return labels, thresholds, markers
+    return segments, debug
 
 
-def create_5class_position_peak_labels(
-    x_position, y_position, x_velocity, y_velocity,
-    deriv_threshold_percent=None, pos_threshold_percent=None,
-    peak_window=None, timeout_samples=None
-):
+def classify_segments(segments, position):
     """
-    Create 5-class labels using position_peak method on both axes.
+    Classify each segment's direction from peak displacement.
 
-    Pipeline:
-        1. Apply position_peak to X-axis → labels_x (0=noise, 1=positive, 2=negative)
-        2. Apply position_peak to Y-axis → labels_y (0=noise, 1=positive, 2=negative)
-        3. Merge labels with amplitude voting:
-           - Both noise → 0 (noise)
-           - Only X has label → remap to 3=left, 4=right
-           - Only Y has label → use as 1=up, 2=down
-           - Both have labels (overlap) → compare amplitudes, pick dominant
+    For each segment, finds the sample where |position| is maximum.
+    Direction = 1 (positive) if peak > 0, else 2 (negative).
+
+    Returns list of dicts: {start, stop, peak_idx, peak_val, direction}
+    """
+    classified = []
+    for start, stop in segments:
+        segment_pos = position[start:stop]
+        peak_local = np.argmax(np.abs(segment_pos))
+        peak_idx = start + peak_local
+        peak_val = position[peak_idx]
+        direction = 1 if peak_val > 0 else 2
+
+        classified.append({
+            'start': start,
+            'stop': stop,
+            'peak_idx': peak_idx,
+            'peak_val': peak_val,
+            'direction': direction,
+        })
+
+    return classified
+
+
+# ──────────────────────────────────────────────────────────
+# Public API
+# ──────────────────────────────────────────────────────────
+
+def detect_movements(position, config=None):
+    """
+    Pass 1: Find active movement regions from position signal.
+
+    Uses smoothed |position| to detect when the joystick is deflected
+    from center. No velocity zero-crossing problem.
+
+    Args:
+        position: filtered position signal [n]
+        config: dict with segment_classify parameters (optional)
+
+    Returns:
+        segments: list of (start, stop) tuples
+        params: dict with computed thresholds, activity signal, and debug info
+    """
+    if config is None:
+        config = {}
+
+    activity_thresh_pct = config.get('activity_threshold_percent', DEFAULT_ACTIVITY_THRESH)
+    smooth_win = config.get('smooth_window', DEFAULT_SMOOTH_WINDOW)
+    min_dur = config.get('min_duration', DEFAULT_MIN_DURATION)
+    gap = config.get('merge_gap', DEFAULT_MERGE_GAP)
+
+    activity = smooth_activity(position, smooth_win)
+    threshold = activity_thresh_pct / 100.0 * np.max(activity)
+    segments, debug = segment_activity(activity, threshold, min_dur, gap)
+
+    params = {
+        'activity_threshold': threshold,
+        'activity_threshold_percent': activity_thresh_pct,
+        'activity_max': np.max(activity),
+        'smooth_window': smooth_win,
+        'min_duration': min_dur,
+        'merge_gap': gap,
+        'activity': activity,
+        'active_mask': debug['active_mask'],
+        'raw_segments': debug['raw_segments'],
+        'merged_segments': debug['merged_segments'],
+    }
+    return segments, params
+
+
+def label_movements(position, velocity, config=None):
+    """
+    Single-axis labeling: detect movements then classify by peak displacement.
+
+    Args:
+        position: filtered position signal [n]
+        velocity: filtered velocity signal [n] (kept for API compatibility with callers)
+        config: dict with segment_classify parameters (optional)
+
+    Returns:
+        labels: array [n], 0=noise, 1=positive, 2=negative
+        segments: list of segment dicts {start, stop, peak_idx, peak_val, direction}
+        params: dict with thresholds and settings
+    """
+    raw_segments, params = detect_movements(position, config)
+    classified = classify_segments(raw_segments, position)
+
+    labels = np.zeros(len(position), dtype=np.int8)
+    for seg in classified:
+        labels[seg['start']:seg['stop']] = seg['direction']
+
+    return labels, classified, params
+
+
+def label_movements_xy(x_pos, y_pos, x_vel, y_vel, config=None):
+    """
+    Dual-axis 5-class labeling.
+
+    Runs label_movements on each axis independently,
+    then merges with per-sample amplitude voting (v²).
 
     Label mapping:
-        0: Noise    (no significant movement on either axis)
+        0: Noise    (no movement on either axis)
         1: Up       (Y+ dominant)
         2: Down     (Y- dominant)
         3: Left     (X- dominant)
         4: Right    (X+ dominant)
 
+    Args:
+        x_pos, y_pos: filtered position signals [n]
+        x_vel, y_vel: filtered velocity signals [n]
+        config: dict with segment_classify parameters (optional)
+
     Returns:
-        labels: Array of 5-class labels
-        thresholds: Dict with threshold values for both axes
-        markers: Dict with markers from both axes
+        labels: array [n] with 5-class labels
+        segments: {'x': [...], 'y': [...]}
+        params: {'x': {...}, 'y': {...}}
     """
-    n = len(x_position)
+    x_labels, x_segs, x_params = label_movements(x_pos, x_vel, config)
+    y_labels, y_segs, y_params = label_movements(y_pos, y_vel, config)
+
+    n = len(x_pos)
     labels = np.zeros(n, dtype=np.int8)
+    x_energy = x_vel ** 2
+    y_energy = y_vel ** 2
 
-    # Apply position_peak to both axes independently
-    x_labels, x_thresh, x_markers = create_position_peak_labels(
-        x_position, x_velocity,
-        deriv_threshold_percent, pos_threshold_percent,
-        peak_window, timeout_samples
-    )
-    y_labels, y_thresh, y_markers = create_position_peak_labels(
-        y_position, y_velocity,
-        deriv_threshold_percent, pos_threshold_percent,
-        peak_window, timeout_samples
-    )
-
-    # Compute per-sample amplitudes for overlap resolution
-    x_amp = np.abs(x_velocity)
-    y_amp = np.abs(y_velocity)
-
-    # Merge labels with amplitude voting at overlaps
     for i in range(n):
         x_lbl = x_labels[i]
         y_lbl = y_labels[i]
 
         if x_lbl == 0 and y_lbl == 0:
-            # Both noise
             labels[i] = 0
         elif x_lbl == 0:
-            # Only Y has label: 1=up, 2=down
-            labels[i] = y_lbl
+            labels[i] = y_lbl                          # 1=up, 2=down
         elif y_lbl == 0:
-            # Only X has label: remap 1=positive→4 (right), 2=negative→3 (left)
-            labels[i] = 4 if x_lbl == 1 else 3
+            labels[i] = 4 if x_lbl == 1 else 3         # 4=right, 3=left
         else:
-            # OVERLAP: both axes have labels → amplitude voting
-            if y_amp[i] >= x_amp[i]:
-                # Y dominant: 1=up, 2=down
+            # overlap: amplitude voting using energy (v²)
+            if y_energy[i] >= x_energy[i]:
                 labels[i] = y_lbl
             else:
-                # X dominant: remap 1=positive→4 (right), 2=negative→3 (left)
                 labels[i] = 4 if x_lbl == 1 else 3
 
-    thresholds = {
-        'x_deriv': x_thresh['deriv'], 'x_pos': x_thresh['pos'],
-        'y_deriv': y_thresh['deriv'], 'y_pos': y_thresh['pos'],
-        'deriv_percent': x_thresh['deriv_percent'],
-        'pos_percent': x_thresh['pos_percent'],
-        'peak_window': x_thresh['peak_window'],
-        'timeout': x_thresh['timeout']
-    }
-    markers = {'x': x_markers, 'y': y_markers}
-
-    return labels, thresholds, markers
+    return labels, {'x': x_segs, 'y': y_segs}, {'x': x_params, 'y': y_params}

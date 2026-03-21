@@ -18,8 +18,8 @@ from preprocessing.visualization.plot_callback import plot_mmode
 from utils.saving import init_dataset, append_and_save
 from preprocessing.signal_utils import peak_normalization, Z_normalization, butter_bandpass_filter, butter_lowpass_filter, Time_Gain_Compensation, extract_sliding_windows, apply_joystick_filters
 from preprocessing.label_logic.label_logic import (
-    create_position_peak_labels,
-    create_5class_position_peak_labels
+    label_movements,
+    label_movements_xy
 )
 from preprocessing.soft_labels import SoftLabelGenerator, window_hard_labels
 
@@ -132,12 +132,8 @@ class DataProcessor():
         self._label_axis = self._label_config.get('axis', 'dual')  # x | y | dual
         self._joystick_filters = self._label_config.get('filters', {})
 
-        # Position peak parameters
-        position_peak_config = self._label_config.get('position_peak', {})
-        self._pp_deriv_thresh = position_peak_config.get('deriv_threshold_percent', 10.0)
-        self._pp_pos_thresh = position_peak_config.get('pos_threshold_percent', 5.0)
-        self._pp_peak_window = position_peak_config.get('peak_window', 3)
-        self._pp_timeout = position_peak_config.get('timeout_samples', 500)
+        # Segment-classify parameters
+        self._sc_config = self._label_config.get('segment_classify', {})
 
         # Class configuration (centralized)
         classes_config = self._label_config.get('classes', {})
@@ -402,12 +398,7 @@ class DataProcessor():
                 'output_mode': self._output_mode,
                 'label_method': self._label_method,
                 'label_axis': self._label_axis,
-                'position_peak': {
-                    'deriv_threshold_percent': self._pp_deriv_thresh,
-                    'pos_threshold_percent': self._pp_pos_thresh,
-                    'peak_window': self._pp_peak_window,
-                    'timeout_samples': self._pp_timeout
-                },
+                'segment_classify': self._sc_config,
                 'soft_labels_enabled': self._soft_labels_enabled,
                 'num_label_classes': self._num_label_classes
             },
@@ -705,7 +696,7 @@ class DataProcessor():
                 data = butter_lowpass_filter(data, ax=1, cutoff=cutoff,
                                              fs=self._bandpass_fs, order=self._envelope_lp_order)
 
-        # Decimation
+        #---Decimation
         if self._decimation_flag:
             data = data[:, ::self._decimation_factor, :]
 
@@ -806,9 +797,11 @@ class DataProcessor():
         x_position = joystick_data[1, :]
         y_position = joystick_data[2, :]
 
+        ############ MAIN 5-class lable function (noise/up/down/left/right)
         # Dual-axis mode: 5-class labels using amplitude voting
         if self._label_axis == 'dual':
-            # Apply filters to both axes
+
+            #---FILTER both axes
             x_filtered = apply_joystick_filters(
                 x_position.copy(), self._joystick_filters, 'position'
             )
@@ -816,11 +809,11 @@ class DataProcessor():
                 y_position.copy(), self._joystick_filters, 'position'
             )
 
-            # Compute derivatives
+            #---COMPUTE DERIVATIVE
             x_derivative = np.gradient(x_filtered)
             y_derivative = np.gradient(y_filtered)
 
-            # Apply filters to derivatives
+            #---Apply filters to derivatives
             x_derivative = apply_joystick_filters(
                 x_derivative, self._joystick_filters, 'derivative'
             )
@@ -828,14 +821,13 @@ class DataProcessor():
                 y_derivative, self._joystick_filters, 'derivative'
             )
 
-            # Create 5-class labels using position_peak + amplitude voting
-            hard_labels, _, _ = create_5class_position_peak_labels(
+            #---Create 5-class labels using segment-classify + amplitude voting
+            hard_labels, _, _ = label_movements_xy(
                 x_filtered, y_filtered, x_derivative, y_derivative,
-                self._pp_deriv_thresh, self._pp_pos_thresh,
-                self._pp_peak_window, self._pp_timeout
+                self._sc_config
             )
         else:
-            # Single-axis mode: 3-class labels (original behavior)
+            # Single-axis mode: 3-class labels
             if self._label_axis == 'x':
                 raw_position = x_position
             elif self._label_axis == 'y':
@@ -856,11 +848,10 @@ class DataProcessor():
                 derivative, self._joystick_filters, 'derivative'
             )
 
-            # Create per-sample hard labels using position_peak method
-            hard_labels, _, _ = create_position_peak_labels(
+            # Create per-sample hard labels using segment-classify method
+            hard_labels, _, _ = label_movements(
                 position_data, derivative,
-                self._pp_deriv_thresh, self._pp_pos_thresh,
-                self._pp_peak_window, self._pp_timeout
+                self._sc_config
             )
 
         # Validate label range
@@ -1056,8 +1047,7 @@ class DataProcessor():
             'decimation_factor': self._decimation_factor if self._decimation_flag else None,
             'label_method': self._label_method,
             'label_axis': self._label_axis,
-            'pp_deriv_thresh': self._pp_deriv_thresh,
-            'pp_pos_thresh': self._pp_pos_thresh,
+            'segment_classify': self._sc_config,
         }
 
         return {
@@ -1094,38 +1084,30 @@ class DataProcessor():
         y_derivative = apply_joystick_filters(np.gradient(y_filtered), self._joystick_filters, 'derivative')
 
         if self._label_axis == 'dual':
-            # 5-class dual-axis mode using position_peak
-            labels, thresholds, dual_markers = create_5class_position_peak_labels(
+            labels, segments, params = label_movements_xy(
                 x_filtered, y_filtered, x_derivative, y_derivative,
-                self._pp_deriv_thresh, self._pp_pos_thresh,
-                self._pp_peak_window, self._pp_timeout
+                self._sc_config
             )
             markers = {
-                'method': 'position_peak_5class',
-                'x_markers': dual_markers.get('x', {}),
-                'y_markers': dual_markers.get('y', {}),
-                'thresholds': thresholds
+                'method': 'segment_classify_5class',
+                'x_segments': segments.get('x', []),
+                'y_segments': segments.get('y', []),
+                'params': params
             }
         else:
-            # Single-axis mode using position_peak
             if self._label_axis == 'x':
                 position_data, derivative = x_filtered, x_derivative
             else:
                 position_data, derivative = y_filtered, y_derivative
 
-            labels, thresholds, axis_markers = create_position_peak_labels(
+            labels, segments, params = label_movements(
                 position_data, derivative,
-                self._pp_deriv_thresh, self._pp_pos_thresh,
-                self._pp_peak_window, self._pp_timeout
+                self._sc_config
             )
             markers = {
-                'method': 'position_peak',
-                'start': axis_markers.get('start', []),
-                'peak': axis_markers.get('peak', []),
-                'stop': axis_markers.get('stop', []),
-                'rejected': axis_markers.get('rejected', []),
-                'timeout': axis_markers.get('timeout', []),
-                'thresholds': thresholds
+                'method': 'segment_classify',
+                'segments': segments,
+                'params': params
             }
 
         # Add position and derivative to markers for plotting

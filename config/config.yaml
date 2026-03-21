@@ -82,8 +82,8 @@ preprocess:
   tokenization:
     tokens2file: true
     startendID: false
-    window: 25                        # Pulses per token
-    stride: 5                         # Pulse stride between tokens
+    window: 15                        # Pulses per token
+    stride: 3                         # Pulse stride between tokens
 
   output:
     mode: "flat"                      # flat: tokens saved individually, sequencing at dataset level
@@ -317,7 +317,7 @@ cross_validation:
 wandb:
   use_wandb: true
   project: "IEEE SAS 2026"
-  api_key: "c1842818a3c8db66c3f75d77b4640749e64cdc0d"    # TODO: move to env variable
+  api_key: null                                          # loaded from config/.env (WANDB_API_KEY)
   name: "embedding_autoencoder"
   settings:
     watch_model: true

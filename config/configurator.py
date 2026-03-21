@@ -437,6 +437,20 @@ class ConfigurationManager:
         return OmegaConf.to_container(self._config, resolve=True)
 
 
+def _load_env_file(config_path: str):
+    """Load .env file from the same directory as the config file into os.environ."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), ".env")
+    if not os.path.exists(env_path):
+        return
+    with open(env_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            os.environ.setdefault(key.strip(), value.strip())
+
+
 def load_config(config_path: str, create_dirs: bool = False) -> ConfigurationManager:
     """
     Load configuration using ConfigurationManager
@@ -447,6 +461,9 @@ def load_config(config_path: str, create_dirs: bool = False) -> ConfigurationMan
                     Set to True for training, False for preprocessing.
     """
     try:
+        # Load .env file from config directory
+        _load_env_file(config_path)
+
         # Load YAML with OmegaConf
         yaml_config = OmegaConf.load(config_path)
 

@@ -49,8 +49,8 @@ sys.path.insert(0, project_root)
 
 from config.configurator import load_config
 from preprocessing.label_logic.label_logic import (
-    create_position_peak_labels,
-    create_5class_position_peak_labels
+    label_movements,
+    label_movements_xy
 )
 from preprocessing.signal_utils import apply_joystick_filters
 
@@ -105,12 +105,8 @@ class TokenVisualizer:
         }
         self.class_colors = ['gray', 'green', 'red', 'blue', 'orange']
 
-        # Position peak config
-        pp_config = label_config.get('position_peak', {})
-        self.pp_deriv_thresh = pp_config.get('deriv_threshold_percent', 10.0)
-        self.pp_pos_thresh = pp_config.get('pos_threshold_percent', 5.0)
-        self.pp_peak_window = pp_config.get('peak_window', 3)
-        self.pp_timeout = pp_config.get('timeout_samples', 500)
+        # Segment-classify config
+        self.sc_config = label_config.get('segment_classify', {})
 
         # Check if soft labels
         soft_cfg = label_config.get('soft_labels', {})
@@ -326,12 +322,11 @@ class TokenVisualizer:
         if self.filters_config:
             y_derivative = apply_joystick_filters(y_derivative, self.filters_config, 'derivative')
 
-        # Create 5-class labels using both axes
-        labels, thresholds, markers = create_5class_position_peak_labels(
+        # Create 5-class labels using segment-classify
+        labels, segments, params = label_movements_xy(
             x_position, y_position,
             x_derivative, y_derivative,
-            self.pp_deriv_thresh, self.pp_pos_thresh,
-            self.pp_peak_window, self.pp_timeout
+            self.sc_config
         )
 
         return {
@@ -340,9 +335,8 @@ class TokenVisualizer:
             'x_derivative': x_derivative,
             'y_position': y_position,
             'y_derivative': y_derivative,
-            'thresholds': thresholds,
-            'x_markers': markers.get('x', {}),
-            'y_markers': markers.get('y', {})
+            'segments': segments,
+            'params': params
         }
 
     def visualize_sample(self, sample=None, seed=None):

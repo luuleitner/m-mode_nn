@@ -47,27 +47,31 @@ classes:
 # --------------------------------------------------
 # LABELING METHOD & PARAMETERS
 # --------------------------------------------------
-method: "position_peak"         # position_peak is the only supported method
-axis: "dual"                    # x | y | dual
+method: "segment_classify"     # segment_classify (two-pass: detect → label)
+axis: "dual"                   # x | y | dual
 
 # Axis modes:
-#   x:    3-class using X-axis only (0=noise, 1=right, 2=left)
-#   y:    3-class using Y-axis only (0=noise, 1=up, 2=down)
+#   x:    3-class using X-axis only (0=noise, 1=positive, 2=negative)
+#   y:    3-class using Y-axis only (0=noise, 1=positive, 2=negative)
 #   dual: 5-class using both axes with amplitude voting:
 #         0=noise, 1=up, 2=down, 3=left, 4=right
 
 # --------------------------------------------------
-# POSITION PEAK METHOD PARAMETERS
+# SEGMENT-CLASSIFY PARAMETERS
 # --------------------------------------------------
-# Three-phase detection: Start → Peak → Stop
-#   Phase 1: |velocity| > deriv_threshold AND |position| < pos_threshold
-#   Phase 2: position reverses (peak detected)
-#   Phase 3: |velocity| < deriv_threshold
-position_peak:
-  deriv_threshold_percent: 10.0    # velocity threshold as % of max velocity (lower = wider labels)
-  pos_threshold_percent: 5.0      # center zone as % of max position (start must be within this)
-  peak_window: 3                  # samples to confirm position reversal (noise filter)
-  timeout_samples: 500            # max samples per phase before forcing end
+# Two-pass approach:
+#   Pass 1 (detect_movements): position-based activity detection
+#     - Smooth |position| with moving average
+#     - Threshold to find regions where joystick is deflected from center
+#     - Cleanup: remove short segments, merge close ones
+#   Pass 2 (label_movements): peak-displacement classification
+#     - For each segment, find peak |position|
+#     - Direction = sign of peak position
+segment_classify:
+  activity_threshold_percent: 10.0  # % of max |position| to count as "active"
+  smooth_window: 10               # moving average window for |position| (samples)
+  min_duration: 10                 # discard segments shorter than this (samples)
+  merge_gap: 3                    # merge segments with gap smaller than this (samples)
 
 # --------------------------------------------------
 # SOFT LABELS (for training)
@@ -102,7 +106,7 @@ filters:
       window_size: 20
 
 # --------------------------------------------------
-# VISUALIZATION (for label_logic/visualize.py only)
+# VISUALIZATION
 # --------------------------------------------------
 display:
   show_raw_trace: true
